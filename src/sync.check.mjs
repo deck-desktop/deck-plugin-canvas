@@ -13,7 +13,7 @@ import { build } from "esbuild";
 const dir = mkdtempSync(join(tmpdir(), "deck-canvas-sync-"));
 const out = join(dir, "sync.mjs");
 await build({ entryPoints: [join(import.meta.dirname, "sync.ts")], outfile: out, format: "esm", bundle: false });
-const { markSeen, takeChanged, newCode, cleanCode, takeNewFiles, SHARE_VERSION, strokeTail, joinStroke, canDraw } = await import(`file://${out}`);
+const { markSeen, takeChanged, takeNewFiles, SHARE_VERSION, strokeTail, joinStroke } = await import(`file://${out}`);
 rmSync(dir, { recursive: true, force: true });
 
 const el = (id, version, extra = {}) => ({ id, version, ...extra });
@@ -42,15 +42,6 @@ assert.deepEqual(takeChanged([el("a", 10)], seen).map((e) => e.id), ["a"]);
 markSeen([el("a", 2)], seen);
 assert.equal(seen.get("a"), 10);
 
-// Codes: four groups of four from an alphabet without look-alikes, and pasted ones tidied.
-const code = newCode();
-assert.match(code, /^[a-hjkmnp-z2-9]{4}(-[a-hjkmnp-z2-9]{4}){3}$/);
-assert.notEqual(newCode(), code);
-assert.equal(newCode(() => new Uint8Array(16)), "aaaa-aaaa-aaaa-aaaa");
-assert.equal(cleanCode("  ABCD-efgh-jkmn-pqrs \n"), "abcd-efgh-jkmn-pqrs");
-assert.equal(cleanCode("abcd efgh"), "");
-assert.equal(cleanCode(""), "");
-
 // Pictures: only those an image on the board shows, once each, and the big ones held back.
 const files = { p1: { id: "p1", dataURL: "x".repeat(10) }, p2: { id: "p2", dataURL: "x".repeat(500) }, spare: { id: "spare", dataURL: "x" } };
 const done = new Set();
@@ -67,15 +58,7 @@ done.add("p3");
 assert.deepEqual(takeNewFiles({ p3: { id: "p3", dataURL: "x" } }, [{ type: "image", fileId: "p3" }], done, 100).send, []);
 // A picture still loading goes out on a later change, once it is there.
 assert.deepEqual(takeNewFiles({ loading: { id: "loading", dataURL: "x" } }, imgs, done, 100).send.map((x) => x.id), ["loading"]);
-assert.equal(SHARE_VERSION, 4);
-
-// Who may draw: the host always; everyone else by their own choice, else the default.
-const roles = { def: "view", per: { sara: "edit" } };
-assert.equal(canDraw(roles, "host", "host"), true, "the host always draws");
-assert.equal(canDraw(roles, "sara", "host"), true, "a person's own choice wins over the default");
-assert.equal(canDraw(roles, "bob", "host"), false, "the default for everyone else");
-assert.equal(canDraw({ def: "edit", per: { bob: "view" } }, "bob", "host"), false, "view only for one person");
-assert.equal(canDraw({ def: "edit", per: {} }, "anyone", null), true);
+assert.equal(SHARE_VERSION, 5);
 
 // Pencil strokes: the tail goes out, and is joined back onto what the other side has.
 const stroke = { id: "s", version: 9, points: [[0, 0], [1, 1], [2, 2], [3, 3]], pressures: [0.1, 0.2, 0.3, 0.4] };

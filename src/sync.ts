@@ -30,20 +30,11 @@ export function takeChanged<T extends Versioned>(elements: readonly T[], seen: S
 }
 
 /**
- * The share protocol's version, said in every hello. Decks on different versions do not share a
- * board: one would half-understand the other. Builds from before this field count as 1.
+ * Canvas's share protocol version, said in every hello (Deck's share layer compares it). Decks on
+ * different versions do not share a board: one would half-understand the other. 5: sharing moved
+ * into Deck, with the host letting each person in instead of a password.
  */
-export const SHARE_VERSION = 4;
-
-/**
- * Who may draw on a shared board: a default for everyone, and a choice per person that wins over
- * it. The host decides, always can, and sends this to everyone; every Deck then ignores edits from
- * whoever may not draw, so a view-only Deck cannot change anyone's board even if it tried.
- */
-export type Mode = "edit" | "view";
-export interface Roles { def: Mode; per: Record<string, Mode> }
-export const canDraw = (roles: Roles, peer: string, host: string | null) =>
-  peer === host || (roles.per[peer] ?? roles.def) === "edit";
+export const SHARE_VERSION = 5;
 
 /**
  * A pencil stroke being drawn, cut down to the points added since `from`: what goes out while the
@@ -92,17 +83,4 @@ export function takeNewFiles<F extends FileLike>(
     (f.dataURL.length > maxBytes ? tooBig : send).push(f);
   }
   return { send, tooBig };
-}
-
-/** A share code: 16 random characters in four groups, easy to read out or paste. */
-export function newCode(random: (n: number) => Uint8Array = (n) => crypto.getRandomValues(new Uint8Array(n))): string {
-  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; // no 0/o, 1/l/i: a code may be read aloud
-  const chars = [...random(16)].map((b) => alphabet[b % alphabet.length]).join("");
-  return chars.match(/.{4}/g)!.join("-");
-}
-
-/** A pasted code, tidied: spaces dropped, case folded. Empty when it is not a code. */
-export function cleanCode(text: string): string {
-  const c = text.trim().toLowerCase().replace(/\s+/g, "");
-  return /^[a-z0-9]{4}(-[a-z0-9]{4}){3}$/.test(c) ? c : "";
 }

@@ -20,13 +20,14 @@ import { useEffect, useRef, useState, useSyncExternalStore, type PointerEvent } 
 import { TabStrip, ConfirmDialog, NamePrompt, ContextMenu, type ConfirmState, type NamePromptState, type MenuEntry } from "../shim/ui.js";
 import { Excalidraw, Footer, serializeAsJSON } from "@excalidraw/excalidraw";
 import excalidrawCss from "@excalidraw/excalidraw/index.css";
-import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Check, Pencil, Trash2, UserX, Eye } from "lucide-react";
-import { cleanCode, newCode, type Mode, type Roles } from "./sync";
+import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Check, Pencil, Trash2, UserX, UserPlus } from "lucide-react";
+import { cleanCode, newCode, type Mode, type Person, type Roles } from "../shim/p2p.js";
 import { LiveShare, type LiveView, type Share } from "./live";
 
 import {
   configRead, configWrite, openExternal, openFile, runScriptNow, type ScriptJob,
 } from "../shim/bridge.js";
+import { userName } from "../shim/settings.js";
 
 // Excalidraw's stylesheet, and Deck's colours over it. A plugin is one plugin.js, so the CSS
 // arrives as text (the builder's .css loader) and goes in as a <style>, taken out again on dispose.
@@ -64,8 +65,10 @@ const DECK_THEME = `
 .deck-canvas .deck-share > button { display: flex; align-items: center; gap: .4rem; height: 100%; padding: 0 .75rem;
   border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .deck-canvas .deck-share > button:hover { background: var(--button-hover-bg); }
-.deck-canvas .deck-share > button svg { width: var(--lg-icon-size); height: var(--lg-icon-size); }
+.deck-canvas .deck-share > button svg, .deck-canvas .deck-share-text svg { width: var(--lg-icon-size); height: var(--lg-icon-size); }
 .deck-canvas .deck-share > .deck-share-text { display: flex; align-items: center; gap: .5rem; padding: 0 .75rem; color: var(--color-gray-50, inherit); white-space: nowrap; }
+/* Someone asking to join: outlined in the accent, so it is noticed. */
+.deck-canvas .deck-knock { box-shadow: 0 0 0 1px var(--color-primary) inset; }
 /* The same gap Excalidraw leaves between its zoom and undo islands. */
 .deck-canvas .deck-share-row { display: flex; gap: .6em; align-items: center; margin-inline-start: .6em; }
 `;
@@ -103,7 +106,7 @@ const lastBoard = new Map<string, string>();
 
 /**
  * The share each project was last in. A host who opens another of its boards ends that share, and
- * coming back offers Resume sharing in one click instead of typing the code and password again.
+ * coming back offers Resume sharing in one click instead of typing the code again.
  * (Leaving the Canvas tab does not end a share at all: see `lives`.) Memory only, never written
  * to disk, gone when Deck restarts; cleared when a share is ended on purpose (Stop, Leave, Close).
  */
@@ -115,10 +118,6 @@ const remembered = new Map<string, Share & { board: string }>();
  */
 const lives = new Map<string, LiveShare>();
 
-/** The name shown to the others on a shared board, remembered for next time. */
-const NAME_KEY = "deck-canvas-name";
-const savedName = () => { try { return localStorage.getItem(NAME_KEY) ?? ""; } catch { return ""; } };
-const saveName = (name: string) => { try { localStorage.setItem(NAME_KEY, name); } catch { /* private mode */ } };
 
 /**
  * Pictures live in their own file, `<key>-files`, beside the scene.
@@ -195,21 +194,13 @@ export function PaneView({ cwd, runInTerminal }: {
     const { board: _b, ...again } = offer;
     setShare({ ...again, attempt: (again.attempt ?? 0) + 1 });
   };
-  // Sharing asks for a password; joining asks for the code, then the password. Two prompts, since
-  // a prompt closes itself after its answer and would take a second question set from it along.
+  // Joining asks only for the code. No password: the host lets each person in (see p2p in Deck),
+  // which is less to pass on and safer if the code leaks. No name either: Deck's own (Settings >
+  // General, else the Google or Windows account's) is what the others see.
   const [codePrompt, setCodePrompt] = useState<NamePromptState | null>(null);
-  const [passwordPrompt, setPasswordPrompt] = useState<SecretPromptState | null>(null);
-  const [namePrompt, setNamePrompt] = useState<NamePromptState | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   // Bumped to remount the board after its files were replaced on disk (a restore from a backup).
   const [reload, setReload] = useState(0);
-  // Last step of both: the name the others see, filled in with the one used last time.
-  // Sharing's last step: may the others draw, or only watch. Changeable later from the bar.
-  const [modeAsk, setModeAsk] = useState<((mode: Mode) => void) | null>(null);
-  const askName = (start: (name: string) => void) => setNamePrompt({
-    title: "Your name", subtitle: "Shown to the others on your cursor", initial: savedName(), confirmLabel: "Start",
-    onSave: (name) => { saveName(name); start(name); },
-  });
 
   useEffect(() => {
     let alive = true;
@@ -343,27 +334,20 @@ export function PaneView({ cwd, runInTerminal }: {
       )}
       {/* Keyed by board: Excalidraw reads initialData only when it mounts. A guest gets a board of
           its own, which starts empty and fills from the host. */}
-      <Board key={share && !share.host ? `shared:${share.code}:${share.password}` : `${sceneKey(project, active)}#${reload}`}
+      <Board key={share && !share.host ? `shared:${share.code}` : `${sceneKey(project, active)}#${reload}`}
         storeKey={sceneKey(project, active)} runInTerminal={runInTerminal}
         share={share}
         boardName={boards.find((b) => b.id === active)?.name ?? "Board"}
         onReload={() => setReload((n) => n + 1)}
         onSaveCopy={(name, scene, files) => addCopy(name, scene, files, active).then(() => {})}
-        onHost={() => setPasswordPrompt({
-          title: "Share this board", subtitle: "Set a password. Whoever joins needs it as well as the code.",
-          confirmLabel: "Next",
-          onSave: (password) => askName((name) => setModeAsk(() => (mode: Mode) => setShare({ code: newCode(), password, host: true, name, mode }))),
-        })}
+        // No questions: the others may draw until the host says otherwise from the bar's menu.
+        onHost={() => void userName().then((name) => setShare({ code: newCode(), host: true, name, mode: "edit" }))}
         onJoin={() => setCodePrompt({
           title: "Join a shared board", subtitle: "The code from whoever is sharing, like abcd-efgh-jkmn-pqrs",
           initial: "", confirmLabel: "Next",
           onSave: (text) => {
             const code = cleanCode(text);
-            if (!code) return;
-            setPasswordPrompt({
-              title: "Password", subtitle: `For ${code}`, confirmLabel: "Next",
-              onSave: (password) => askName((name) => setShare({ code, password, host: false, name })),
-            });
+            if (code) void userName().then((name) => setShare({ code, host: false, name }));
           },
         })}
         onStop={endShare}
@@ -374,9 +358,6 @@ export function PaneView({ cwd, runInTerminal }: {
         onRejoin={() => setShare((x) => x && { ...x, attempt: (x.attempt ?? 0) + 1 })} />
       <ConfirmDialog state={confirm} onClose={() => setConfirm(null)} />
       <NamePrompt state={codePrompt} onClose={() => setCodePrompt(null)} />
-      <SecretPrompt state={passwordPrompt} onClose={() => setPasswordPrompt(null)} />
-      <NamePrompt state={namePrompt} onClose={() => setNamePrompt(null)} />
-      {modeAsk && <ModePrompt onChoose={(m) => { const go = modeAsk; setModeAsk(null); go(m); }} onCancel={() => setModeAsk(null)} />}
       <NamePrompt state={renaming} onClose={() => setRenaming(null)} />
     </div>
   );
@@ -573,9 +554,9 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
     const mine = l;
     // Off screen, not over: the share goes on working on the board's last scene.
     return () => mine.detach(apiRef.current);
-  }, [share?.code, share?.password, share?.attempt]);
+  }, [share?.code, share?.attempt]);
   const view = useSyncExternalStore(live?.subscribe ?? noSubscribe, live?.getView ?? noView);
-  const { hostGone, stuck, note } = view;
+  const { gone: hostGone, stuck, note } = view;
   const hostName = { current: view.hostName };
 
   /** A guest keeping what is on screen: the host's board, as a board of their own. */
@@ -681,6 +662,8 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
       >
         <Footer>
           <ShareBar share={share} peers={view.peers} saving={saving && !guest}
+            knocking={view.knocking} waiting={view.waiting} hostName={view.hostName}
+            onAllow={(id) => liveRef.current?.allow(id)} onDeny={(id) => liveRef.current?.deny(id)}
             onKick={(id) => liveRef.current?.kick(id)} note={note} stuck={stuck} onRejoin={onRejoin}
             roles={view.roles} canEdit={view.canEdit}
             onDefault={(m) => liveRef.current?.setDefault(m)} onPerson={(id, m) => liveRef.current?.setPerson(id, m)}
@@ -731,7 +714,14 @@ function DeckButton({ label, action, arg, scripts, onRun }: {
 const SLOW_MS = 250;
 
 /** Share, Join, or while shared: the code, who is here, and Stop. */
-function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, stuck, onRejoin, offer, onResume, onDismissOffer, roles, canEdit, onDefault, onPerson }: {
+function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, stuck, onRejoin, offer, onResume, onDismissOffer, roles, canEdit, onDefault, onPerson, knocking, waiting, hostName, onAllow, onDeny }: {
+  /** The host: who is asking to be let in. */
+  knocking: Person[];
+  onAllow: (id: string) => void;
+  onDeny: (id: string) => void;
+  /** A guest the host has not let in yet. */
+  waiting: boolean;
+  hostName: string;
   /** Who may draw, and whether this Deck may. */
   roles: Roles;
   canEdit: boolean;
@@ -747,7 +737,7 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
   /** A guest that has heard nothing from the host for a while. */
   stuck: boolean;
   /** Who is connected. */
-  peers: { id: string; name: string; ms?: number }[];
+  peers: Person[];
   /** Remove someone: offered to the host from the list of who is connected. */
   onKick: (id: string) => void;
   saving: boolean;
@@ -760,14 +750,15 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
   const [people, setPeople] = useState<{ x: number; y: number } | null>(null);
   const status = <>
     <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: !peers.length || peers.some((p) => (p.ms ?? 0) > SLOW_MS) ? "#fbbf24" : "#4ade80" }} />
-    {stuck && !peers.length ? "Can't reach the board: check the code and password, or your network"
+    {stuck && !peers.length ? "Can't reach the board: check the code, or your network"
+      : waiting ? `Waiting for ${hostName} to let you in…`
       : <>{share?.host ? "Sharing" : "Joined"}{!canEdit ? " · view only" : ""} · {peers.length ? `with ${peers.map((p) => (p.ms === undefined ? p.name : `${p.name} · ${p.ms} ms`)).join(", ")}` : share?.host ? "waiting for someone" : "connecting…"}</>}
   </>;
   return (
     <div className="deck-share-row">
       {!share && offer ? (
         <div className="deck-share">
-          <button onClick={onResume} title={offer.host ? "Share this board again, same code and password" : "Join that board again, same code and password"}>
+          <button onClick={onResume} title={offer.host ? "Share this board again, same code" : "Join that board again, same code"}>
             {offer.host ? <Share2 /> : <LogIn />} {offer.host ? "Resume sharing" : "Rejoin"} <span className="font-mono">{offer.code}</span>
           </button>
           <button onClick={onDismissOffer} title="Forget it">✕</button>
@@ -796,10 +787,18 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
           <button onClick={onStop}>{share.host ? "Stop" : "Leave"}</button>
         </div>
       )}
+      {/* Someone with the code asking to come in: the host lets them in, or not. */}
+      {share?.host && knocking.map((p) => (
+        <div key={p.id} className="deck-share deck-knock">
+          <span className="deck-share-text"><UserPlus /> {p.name} wants to join</span>
+          <button onClick={() => onAllow(p.id)} title={`Let ${p.name} onto the board`}>Let in</button>
+          <button onClick={() => onDeny(p.id)} title={`Turn ${p.name} away`}>✕</button>
+        </div>
+      ))}
       {note && <span className="text-[11px] text-text-muted">{note}</span>}
       {saving && <span className="text-[11px] text-text-muted">saving…</span>}
       {people && (
-        <ContextMenu x={people.x} y={people.y} onClose={() => setPeople(null)}
+        <ContextMenu x={people.x} y={people.y} up onClose={() => setPeople(null)}
           items={[
             // Settings rows (checked): the menu stays open while they are flipped.
             // One tick for the default: on, everyone may draw; off, everyone only views.
@@ -866,7 +865,7 @@ function ShareEndDialog({ leftover, onChoose, onCancel }: {
 
 /** On a guest, once the host has stopped sharing or disappeared: keep a copy, or close. */
 function HostGoneDialog({ why, host, onKeep, onClose, onRejoin }: {
-  why: "ended" | "lost" | "removed" | "version";
+  why: "ended" | "lost" | "removed" | "denied" | "version";
   host: string;
   onKeep: () => void;
   onClose: () => void;
@@ -879,11 +878,13 @@ function HostGoneDialog({ why, host, onKeep, onClose, onRejoin }: {
       <div className="w-[380px] rounded-xl border border-subtle p-4 shadow-xl" style={{ background: "var(--bg-elev)" }}>
         <div className="mb-1 text-sm font-medium text-text-primary">
           {why === "ended" ? `${host} stopped sharing` : why === "removed" ? `${host} removed you from the board`
+            : why === "denied" ? `${host} didn't let you in`
             : why === "version" ? `${host} has a different Canvas version` : `Lost the connection to ${host}`}
         </div>
         <p className="mb-3 text-xs text-text-muted">
           {why === "version"
             ? "Both of you need the same Canvas build to share a board. Update Canvas, then join again."
+            : why === "denied" ? "Ask them to share again if that was a mistake."
             : `The board stays with ${host}. You can keep what you see as a board of your own.`}
         </p>
         <div className="flex flex-col gap-1.5">
@@ -893,10 +894,10 @@ function HostGoneDialog({ why, host, onKeep, onClose, onRejoin }: {
               <span className="text-[11px] text-text-muted">Connect to {host}'s board again, if they are still sharing.</span>
             </button>
           )}
-          <button className={row} onClick={onKeep}>
+          {why !== "denied" && <button className={row} onClick={onKeep}>
             <span className="text-[13px] text-text-primary">Keep a copy</span>
             <span className="text-[11px] text-text-muted">Saved as a new board here, "{host}'s board".</span>
-          </button>
+          </button>}
           <button className={row} onClick={onClose}>
             <span className="text-[13px] text-text-primary">Close</span>
             <span className="text-[11px] text-text-muted">Back to your own boards.</span>
@@ -907,77 +908,8 @@ function HostGoneDialog({ why, host, onKeep, onClose, onRejoin }: {
   );
 }
 
-interface SecretPromptState {
-  title: string;
-  subtitle?: string;
-  confirmLabel?: string;
-  onSave: (value: string) => void;
-}
-
-/**
- * A password, asked in a hidden-text box. Deck's NamePrompt shows what is typed; this has its
- * look with a password field, here rather than in Deck so the plugin runs on Deck 1.1. The value
- * is taken as typed, spaces included.
- */
-function SecretPrompt({ state, onClose }: { state: SecretPromptState | null; onClose: () => void }) {
-  const [val, setVal] = useState("");
-  useEffect(() => { if (state) setVal(""); }, [state]);
-  if (!state) return null;
-  const submit = () => { if (!val) return; state.onSave(val); onClose(); };
-  return (
-    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50" onMouseDown={onClose}>
-      <div className="w-80 rounded-xl border border-subtle p-4 shadow-2xl" style={{ background: "var(--bg-card)" }}
-        onMouseDown={(e) => e.stopPropagation()}>
-        <div className="text-[15px] font-semibold text-text-primary">{state.title}</div>
-        {state.subtitle && <div className="mt-1 text-[12px] text-text-muted">{state.subtitle}</div>}
-        <input type="password" autoFocus value={val} autoComplete="off"
-          onChange={(e) => setVal(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") onClose(); }}
-          className="mt-3 w-full rounded-lg border border-subtle bg-transparent px-3 py-2 text-sm text-text-primary outline-none focus:border-[var(--accent)]" />
-        <div className="mt-4 flex justify-end gap-2">
-          <button onClick={onClose}
-            className="rounded-md border border-subtle bg-elev px-3.5 py-2 text-[13px] text-text-secondary transition hover:text-text-primary">
-            Cancel
-          </button>
-          <button onClick={submit} disabled={!val}
-            className="rounded-md px-3.5 py-2 text-[13px] font-semibold text-white disabled:opacity-40"
-            style={{ background: "var(--accent)" }}>
-            {state.confirmLabel ?? "OK"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // Not sharing: nothing to subscribe to, and one unchanging view. A new object on each read would
 // look like a change to useSyncExternalStore every time, and render without end.
 const noSubscribe = () => () => {};
-const NO_VIEW: LiveView = { peers: [], stuck: false, hostGone: null, hostName: "the host", note: "", roles: { def: "edit", per: {} }, canEdit: true };
+const NO_VIEW: LiveView = { peers: [], knocking: [], waiting: false, stuck: false, gone: null, hostName: "the host", note: "", roles: { def: "edit", per: {} }, canEdit: true };
 const noView = () => NO_VIEW;
-
-/** Sharing's last step: whether the others may draw or only watch. */
-function ModePrompt({ onChoose, onCancel }: { onChoose: (mode: Mode) => void; onCancel: () => void }) {
-  const row = "flex w-full items-start gap-2.5 rounded-lg border border-subtle px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]";
-  return (
-    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50" onMouseDown={onCancel}>
-      <div className="w-80 rounded-xl border border-subtle p-4 shadow-2xl" style={{ background: "var(--bg-card)" }}
-        onMouseDown={(e) => e.stopPropagation()}>
-        <div className="text-[15px] font-semibold text-text-primary">What can the others do?</div>
-        <div className="mt-1 text-[12px] text-text-muted">You can change it while sharing, for everyone or for one person.</div>
-        <div className="mt-3 flex flex-col gap-1.5">
-          <button autoFocus className={row} onClick={() => onChoose("edit")}>
-            <Pencil size={14} className="mt-0.5 shrink-0 text-text-muted" />
-            <span><span className="block text-[13px] text-text-primary">Edit</span>
-              <span className="block text-[11px] text-text-muted">Draw on the board with you.</span></span>
-          </button>
-          <button className={row} onClick={() => onChoose("view")}>
-            <Eye size={14} className="mt-0.5 shrink-0 text-text-muted" />
-            <span><span className="block text-[13px] text-text-primary">View only</span>
-              <span className="block text-[11px] text-text-muted">Watch and point, but not change anything.</span></span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}

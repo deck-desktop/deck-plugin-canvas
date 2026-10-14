@@ -17,9 +17,12 @@ Each workspace folder has its own boards, shown as tabs:
 There is no server of yours involved: the Decks connect directly, and find each other through
 public Nostr relays that only ever see an encrypted handshake.
 
-- **Sharing** asks for a password, your name, and whether the others may edit or only view. Send
-  the code shown in the bar, and tell them the password.
-- **Joining** asks for the code, the password and your name.
+- **Sharing** starts at once, with everyone able to edit; send them the code shown in the bar.
+- **Joining** asks for the code, then waits for the host to let you in.
+- The others see your name from Deck's Settings > General (empty uses your Google account's name,
+  else your Windows account's).
+- The host sees "*name* wants to join" in the bar, with **Let in** and ✕. Nobody is sent the
+  board until let in, so a code that ends up in the wrong place lets no one in by itself.
 - While shared you see each other's cursors, names, laser pointer and pictures (up to 4 MB each),
   and the bar shows each connection's round trip in ms.
 - Click the bar's status to let everyone edit or not, set one person to edit or view only, or

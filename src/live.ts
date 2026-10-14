@@ -1,44 +1,47 @@
 // A share that outlives the Canvas tab.
 //
 // Deck unmounts a pane you are not looking at: another tab, another workspace. A share held in the
-// board component ended with it, so switching away dropped everyone and coming back meant typing
-// the code and password again. This keeps the share at module scope instead, the way Deck keeps a
-// terminal's shell running while its tab is hidden (core/terminals.ts).
+// board component ended with it, so switching away dropped everyone and coming back meant joining
+// again. This keeps the share at module scope instead, the way Deck keeps a terminal's shell
+// running while its tab is hidden (core/terminals.ts).
 //
 // While the board is on screen, its Excalidraw API is attached and the share reads and writes the
 // scene through it. While it is not, the share keeps the last scene the board showed and applies
 // what arrives to that copy; the host also saves it, as the board would have. Coming back, the
 // board opens from that copy and attaches again, so nothing that happened meanwhile is missing.
+//
+// Who is in, who may draw, removing someone and how a share ends are Deck's (p2p in window.__deck,
+// src/core/p2p.ts). This file is what a board adds on top: keeping two Excalidraw scenes the same.
 import { serializeAsJSON, reconcileElements, CaptureUpdateAction, getSceneVersion } from "@excalidraw/excalidraw";
 import { configWrite } from "../shim/bridge.js";
-import { connect, selfId, type Session, type ShareMsg } from "./share";
-import { canDraw, joinStroke, markSeen, strokeTail, takeChanged, takeNewFiles, SHARE_VERSION, type Mode, type Roles, type Seen } from "./sync";
+import { toast } from "../shim/ui.js";
+import { share as startShare, type Json, type Mode, type P2pShare, type ShareView } from "../shim/p2p.js";
+import { joinStroke, markSeen, strokeTail, takeChanged, takeNewFiles, SHARE_VERSION, type Seen } from "./sync";
 
-/** A share: the room's code, the password the host set, which side this Deck is, its name. */
+/** A share: the room's code, which side this Deck is, its name. */
 export interface Share {
-  code: string; password: string; host: boolean; name: string;
+  code: string; host: boolean; name: string;
   /** Bumped by Rejoin: the same room again, a fresh connection, the board left as it is. */
   attempt?: number;
   /** The host's choice when sharing: whether the others may draw. Changeable while shared. */
   mode?: Mode;
 }
 
-export type HostGone = "ended" | "lost" | "removed" | "version";
+/** What travels between Decks on a shared board, beside Deck's own share messages. */
+type BoardMsg =
+  /** The whole board, from the host to someone just let in. */
+  | { t: "scene"; elements: Json[] }
+  /** Elements edited since the last message. */
+  | { t: "update"; elements: Json[] }
+  /** Pictures that image elements show, as Excalidraw keeps them (id, mimeType, dataURL, created). */
+  | { t: "files"; files: Json[] }
+  /** Where someone's pointer is, for the cursor drawn on everyone else's board. With the laser
+   *  tool, Excalidraw draws the trail on the others' boards while the button is down. */
+  | { t: "pointer"; x: number; y: number; button: "up" | "down"; tool: "pointer" | "laser" };
 
-/** What the bar and dialogs show. Replaced, never mutated, so React sees a change. */
-export interface LiveView {
-  peers: { id: string; name: string; ms?: number }[];
-  /** A guest that has heard nothing from a host for a while. */
-  stuck: boolean;
-  /** On a guest: the host stopped, vanished, removed this Deck, or speaks another version. */
-  hostGone: HostGone | null;
-  hostName: string;
-  /** A passing line: a picture too big to send, someone on another version. */
-  note: string;
-  /** Who may draw (see sync.ts), and whether this Deck may. */
-  roles: Roles;
-  canEdit: boolean;
-}
+/** What the bar and dialogs show: Deck's share view (who is here, who is knocking, who may draw,
+ *  how it ended). */
+export type LiveView = ShareView;
 
 /**
  * Edits go out at most this often, and never while the last batch is still on its way: whatever
@@ -56,12 +59,8 @@ const SEND_DRAWING_MS = 100;
  * now and then lets the newest version of every shape win everywhere, as excalidraw.com does.
  */
 const FULL_SYNC_MS = 15000;
-/** How often each connection's round trip is measured, for the number the bar shows. */
-const PING_MS = 3000;
 /** The largest picture sent to the others; a bigger one stays an empty frame on their boards. */
 const MAX_PICTURE = 4 * 1024 * 1024;
-/** How long a guest waits to hear from a host before saying it can't reach the board. */
-const STUCK_MS = 20000;
 
 const filesKey = (key: string) => `${key}-files`;
 
@@ -72,24 +71,15 @@ export class LiveShare {
   readonly share: Share;
   /** Where the host's board is saved; empty on a guest, whose board is never saved. */
   readonly boardKey: string;
-  private s: Session;
+  private s: P2pShare<BoardMsg>;
   private api: any = null;
   /** The scene while the board is off screen (and the last one seen while it is on). */
   private scene: Scene;
-  private listeners = new Set<() => void>();
-  view: LiveView;
 
   // Per element, the highest version sent or received: see sync.ts.
   private seen: Seen = new Map();
   // Pictures already sent or received, so each goes out once (see takeNewFiles).
   private filesDone: Set<string>;
-  // Peers whose hello showed the same share version: nothing else from a peer is read before it.
-  private verified = new Set<string>();
-  // Peers the host removed: not drawn, not listened to.
-  private kicked = new Set<string>();
-  private hostPeer: string | null = null;
-  private names = new Map<string, string>();
-  private pings = new Map<string, number>();
   private cursors = new Map<string, any>();
   // The pencil stroke being drawn: how many of its points the others already have (strokeTail).
   private strokeSent = new Map<string, number>();
@@ -97,44 +87,41 @@ export class LiveShare {
   private sendQueued = false;
   private lastSent = 0;
   private fullSynced = -1;
-  private timers: ReturnType<typeof setInterval>[] = [];
-  private stuckTimer?: ReturnType<typeof setTimeout>;
-  private noteTimer?: ReturnType<typeof setTimeout>;
+  private syncTimer: ReturnType<typeof setInterval>;
   private saveTimer?: ReturnType<typeof setTimeout>;
   private closed = false;
+  // Toasts saying someone wants to join, raised while the board is off screen: the bar that lets
+  // them in is not visible then. Taken down once they are let in, turned away, or the board shows.
+  private knockToasts = new Map<string, () => void>();
 
   constructor(share: Share, boardKey: string, scene: Scene) {
     this.share = share;
     this.boardKey = share.host ? boardKey : "";
-    // A guest draws until the host says otherwise, which it does as the guest joins.
-    const roles: Roles = { def: share.host ? share.mode ?? "edit" : "edit", per: {} };
-    this.view = { peers: [], stuck: false, hostGone: null, hostName: "the host", note: "", roles, canEdit: true };
     this.scene = scene;
-    // What is on the board now is what a joining peer gets in full, not an edit to broadcast;
-    // the same for its pictures, which go to a joiner in its welcome.
+    // What is on the board now is what someone let in gets in full, not an edit to broadcast;
+    // the same for its pictures, which go to them in their welcome.
     markSeen(scene.elements, this.seen);
     this.filesDone = new Set(Object.keys(scene.files));
-    if (!share.host) this.stuckTimer = setTimeout(() => { if (!this.hostPeer) this.set({ stuck: true }); }, STUCK_MS);
-    this.s = connect(share.code, share.password, {
-      message: (msg, peer) => this.onMessage(msg, peer),
-      join: (peer) => {
-        if (this.kicked.has(peer)) return; // back with the same id: not let in again
-        this.refreshPeers();
-        void this.s.send({ t: "hello", name: share.name, host: share.host, v: SHARE_VERSION }, peer);
+    this.s = startShare<BoardMsg>(
+      // "board" was Canvas's one channel before sharing moved into Deck; kept as the name of its own.
+      { app: "canvas-share", channel: "board", code: share.code, host: share.host, name: share.name, version: SHARE_VERSION, mode: share.mode },
+      {
+        message: (msg, peer) => this.onMessage(msg, peer),
+        welcome: (peer) => this.welcome(peer),
+        left: (peer) => { this.cursors.delete(peer); this.showCursors(); },
       },
-      leave: (peer) => {
-        // The host's connection dropped without a goodbye (Deck closed, network gone).
-        if (!share.host && peer === this.hostPeer) { this.hostLeft("lost"); return; }
-        this.drop(peer, false);
-      },
+    );
+    // Ended for this Deck (the host stopped, left or removed it): stop the board's side too. The
+    // board stays on screen until the guest chooses what to keep.
+    this.s.subscribe(() => {
+      if (this.view.gone) void this.close();
+      this.toastKnocks();
     });
-    this.timers.push(setInterval(() => this.fullSync(), FULL_SYNC_MS));
-    this.timers.push(setInterval(() => this.measure(), PING_MS));
+    this.syncTimer = setInterval(() => this.fullSync(), FULL_SYNC_MS);
   }
 
   matches(share: Share) {
-    return !this.closed && share.code === this.share.code && share.password === this.share.password
-      && (share.attempt ?? 0) === (this.share.attempt ?? 0);
+    return !this.closed && share.code === this.share.code && (share.attempt ?? 0) === (this.share.attempt ?? 0);
   }
 
   // ---- The board, on screen or not ----
@@ -143,6 +130,7 @@ export class LiveShare {
   attach(api: any) {
     this.api = api;
     this.showCursors();
+    this.toastKnocks();
   }
 
   /** The board went off screen: keep working on the last scene it showed. */
@@ -239,7 +227,7 @@ export class LiveShare {
     // One message each: a picture can be megabytes, and Trystero splits a message into chunks
     // that all have to arrive before any of it is read.
     for (const f of send) void this.s.send({ t: "files", files: [f as any] });
-    if (tooBig.length) this.say(`${tooBig.length === 1 ? "A picture is" : `${tooBig.length} pictures are`} too big to share (over 4 MB)`);
+    if (tooBig.length) this.s.say(`${tooBig.length === 1 ? "A picture is" : `${tooBig.length} pictures are`} too big to share (over 4 MB)`);
   }
 
   private lastPointer = 0;
@@ -256,7 +244,7 @@ export class LiveShare {
 
   /** The whole board now and then, but only when it changed since the last time: see FULL_SYNC_MS. */
   private fullSync() {
-    if (this.closed || !this.verified.size || !this.view.canEdit) return;
+    if (this.closed || !this.view.peers.length || !this.view.canEdit) return;
     const all = this.elements();
     const v = getSceneVersion(all);
     if (v === this.fullSynced) return;
@@ -264,29 +252,13 @@ export class LiveShare {
     void this.s.send({ t: "update", elements: all });
   }
 
-  private measure() {
-    for (const p of this.verified) {
-      if (this.kicked.has(p)) continue;
-      this.s.ping(p).then((ms) => {
-        if (this.pings.get(p) === Math.round(ms)) return;
-        this.pings.set(p, Math.round(ms));
-        this.refreshPeers();
-      }).catch(() => {});
-    }
-  }
-
   // ---- Receiving ----
 
-  private onMessage(msg: ShareMsg, peer: string) {
-    if (this.closed || this.kicked.has(peer)) return;
-    // Until its hello shows it speaks this version, a peer is only heard saying hello.
-    if (msg.t !== "hello" && !this.verified.has(peer)) return;
+  private onMessage(msg: BoardMsg, peer: string) {
+    if (this.closed) return;
     // Edits from someone who may not draw are dropped, by every Deck, not only the host's.
-    if ((msg.t === "update" || msg.t === "files" || msg.t === "scene") && !canDraw(this.view.roles, peer, this.share.host ? null : this.hostPeer)) return;
-    if (msg.t === "roles") {
-      if (peer !== this.hostPeer) return; // only the host decides
-      this.setRoles({ def: msg.def, per: msg.per });
-    } else if (msg.t === "files") {
+    if (msg.t !== "pointer" && !this.s.mayEdit(peer)) return;
+    if (msg.t === "files") {
       const got = msg.files as any[];
       for (const f of got) this.filesDone.add(f.id);
       this.addFiles(got);
@@ -298,122 +270,52 @@ export class LiveShare {
       // Recorded before the scene changes, so the change event this fires sends none of it back.
       markSeen(remote, this.seen);
       this.apply(remote, msg.t === "scene");
-    } else if (msg.t === "hello") {
-      if ((msg.v ?? 1) !== SHARE_VERSION) {
-        // The host on another version ends this for the guest; anyone else is left out.
-        if (msg.host && !this.share.host) { this.set({ hostName: msg.name }); this.hostLeft("version"); }
-        else { this.drop(peer); this.say(`${msg.name} has a different Canvas version and was not let in`); }
-        return;
-      }
-      this.verified.add(peer);
-      this.names.set(peer, msg.name);
-      if (msg.host) { this.hostPeer = peer; this.set({ hostName: msg.name, stuck: false }); }
-      if (this.share.host && !msg.host) this.welcome(peer);
-      const c = this.cursors.get(peer);
-      if (c) { this.cursors.set(peer, { ...c, username: msg.name }); this.showCursors(); }
-      this.refreshPeers();
-    } else if (msg.t === "end") {
-      if (!this.share.host) this.hostLeft("ended");
-    } else if (msg.t === "kick") {
-      if (peer !== this.hostPeer) return; // only the host removes anyone
-      if (msg.peer === selfId) this.hostLeft("removed");
-      else this.drop(msg.peer);
     } else if (msg.t === "pointer") {
-      const username = this.names.get(peer) ?? "someone";
+      const username = this.view.peers.find((p) => p.id === peer)?.name ?? "someone";
       this.cursors.set(peer, { pointer: { x: msg.x, y: msg.y, tool: msg.tool ?? "pointer" }, button: msg.button, username, id: peer });
       this.showCursors();
     }
   }
 
-  /** The board and its pictures, to a joiner whose version checked out. */
+  /** The board and its pictures, to someone just let in. */
   private welcome(peer: string) {
-    void this.s.send({ t: "roles", ...this.view.roles }, peer);
     void this.s.send({ t: "scene", elements: this.elements() }, peer);
     const { send } = takeNewFiles(this.files(), this.liveElements(), new Set(), MAX_PICTURE);
     for (const f of send) void this.s.send({ t: "files", files: [f as any] }, peer);
   }
 
-  // ---- Who may draw (the host) ----
-
-  /** The default for everyone. */
-  setDefault(def: Mode) { this.changeRoles({ ...this.view.roles, def }); }
-
-  /** One person's own choice, or `null` to follow the default again. */
-  setPerson(peer: string, mode: Mode | null) {
-    const per = { ...this.view.roles.per };
-    if (mode === null) delete per[peer]; else per[peer] = mode;
-    this.changeRoles({ ...this.view.roles, per });
-  }
-
-  private changeRoles(roles: Roles) {
-    if (!this.share.host) return;
-    this.setRoles(roles);
-    void this.s.send({ t: "roles", ...roles });
-  }
-
-  private setRoles(roles: Roles) {
-    const canEdit = this.share.host || (roles.per[selfId] ?? roles.def) === "edit";
-    this.set({ roles, canEdit });
-  }
-
-  // ---- People ----
-
-  /** Remove someone from the board (the host only). */
-  kick(peer: string) {
-    void this.s.send({ t: "kick", peer });
-    this.drop(peer);
-  }
-
-  /** Forget a peer that left, or that the host removed (`kick`: not let back in). */
-  private drop(peer: string, kick = true) {
-    if (kick) this.kicked.add(peer);
-    this.names.delete(peer);
-    this.pings.delete(peer);
-    this.cursors.delete(peer);
-    this.showCursors();
-    this.refreshPeers();
-  }
-
-  private refreshPeers() {
-    const peers = this.s.peers().filter((p) => !this.kicked.has(p))
-      .map((id) => ({ id, name: this.names.get(id) ?? "someone", ms: this.pings.get(id) }));
-    this.set({ peers });
+  private toastKnocks() {
+    const knocking = new Set(this.api || this.closed ? [] : this.view.knocking.map((p) => p.id));
+    for (const [id, dismiss] of this.knockToasts) if (!knocking.has(id)) { dismiss(); this.knockToasts.delete(id); }
+    for (const p of this.view.knocking) {
+      if (!knocking.has(p.id) || this.knockToasts.has(p.id)) continue;
+      this.knockToasts.set(p.id, toast(`${p.name} wants to join your shared board: open it in Canvas to let them in`, "info", { ms: 0 }));
+    }
   }
 
   private showCursors() { this.api?.updateScene({ collaborators: new Map(this.cursors) }); }
 
-  /** A guest whose host has gone: stop talking, keep the board until they choose. */
-  private hostLeft(why: HostGone) {
-    void this.close();
-    this.set({ hostGone: why });
-  }
+  // ---- People: Deck's share decides; the bar calls these ----
 
-  private say(note: string) {
-    this.set({ note });
-    clearTimeout(this.noteTimer);
-    this.noteTimer = setTimeout(() => this.set({ note: "" }), 6000);
-  }
+  get view(): LiveView { return this.s.getView(); }
+  subscribe = (fn: () => void) => this.s.subscribe(fn);
+  getView = () => this.s.getView();
+  allow(peer: string) { this.s.allow(peer); }
+  deny(peer: string) { this.s.deny(peer); }
+  kick(peer: string) { this.s.kick(peer); }
+  setDefault(def: Mode) { this.s.setDefault(def); }
+  setPerson(peer: string, mode: Mode | null) { this.s.setPerson(peer, mode); }
 
   // ---- Ending ----
 
-  /** Leave the room; with `announce` (the host ending on purpose) tell everyone first. */
+  /** Leave; with `announce` (the host ending on purpose) tell everyone first. */
   async close(announce = false) {
     if (this.closed) return;
     this.closed = true;
-    this.timers.forEach(clearInterval);
-    clearTimeout(this.stuckTimer);
-    clearTimeout(this.noteTimer);
+    clearInterval(this.syncTimer);
     this.cursors.clear();
+    this.toastKnocks();
     this.showCursors();
     await this.s.close(announce);
-  }
-
-  // ---- For React (useSyncExternalStore) ----
-
-  subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
-  getView = () => this.view;
-  private set(part: Partial<LiveView>) {
-    this.view = { ...this.view, ...part };
-    this.listeners.forEach((f) => f());
   }
 }
