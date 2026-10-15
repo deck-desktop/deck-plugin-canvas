@@ -20,7 +20,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type PointerEvent } 
 import { TabStrip, ConfirmDialog, NamePrompt, ContextMenu, type ConfirmState, type NamePromptState, type MenuEntry } from "../shim/ui.js";
 import { Excalidraw, Footer, serializeAsJSON } from "@excalidraw/excalidraw";
 import excalidrawCss from "@excalidraw/excalidraw/index.css";
-import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Check, Pencil, Trash2, UserX, UserPlus } from "lucide-react";
+import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Check, Pencil, Trash2, UserX, UserPlus, Grid3x3, Magnet } from "lucide-react";
 import { cleanCode, newCode, type Mode, type Person, type Roles } from "../shim/p2p.js";
 import { LiveShare, type LiveView, type Share } from "./live";
 
@@ -36,7 +36,8 @@ import { userName } from "../shim/settings.js";
 // the zoom and undo islands, dialogs) follows at once. The canvas itself is drawn transparent
 // (see viewBackgroundColor below), so the pane's background shows through as for any other pane.
 const DECK_THEME = `
-.deck-canvas .excalidraw.theme--dark {
+.deck-canvas .excalidraw.theme--dark,
+.deck-canvas .excalidraw.theme--light {
   --island-bg-color: var(--bg-elev);
   --sidebar-bg-color: var(--bg-elev);
   --popup-bg-color: var(--bg-elev);
@@ -56,6 +57,28 @@ const DECK_THEME = `
   --ui-font: var(--font-sans);
 }
 .deck-canvas .excalidraw .Island { border: 1px solid var(--border-subtle); }
+/* The grid button at the top right, drawn like the toolbar's own buttons. */
+.deck-canvas .deck-grid-toggle {
+  display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px;
+  border: 1px solid var(--border-subtle); background: var(--bg-elev); color: var(--text-secondary);
+  cursor: pointer;
+}
+.deck-canvas .deck-grid-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+.deck-canvas .deck-grid-toggle[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.deck-canvas .deck-grid-toggle:disabled { opacity: 0.4; cursor: default; }
+/* The grid: fine lines every grid square, stronger ones every fifth, positioned with the scene. */
+.deck-canvas .deck-grid {
+  --grid-major: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  background-image:
+    linear-gradient(to right, var(--grid-major) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-major) 1px, transparent 1px),
+    linear-gradient(to right, var(--grid-minor, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-minor, transparent) 1px, transparent 1px);
+  background-size:
+    var(--grid-major-size, 100px) var(--grid-major-size, 100px), var(--grid-major-size, 100px) var(--grid-major-size, 100px),
+    var(--grid-minor-size, 20px) var(--grid-minor-size, 20px), var(--grid-minor-size, 20px) var(--grid-minor-size, 20px);
+  background-position: var(--grid-x, 0) var(--grid-y, 0);
+}
 /* The share controls, in the footer row beside zoom and undo, drawn the way those are: a
    panel of borderless buttons (not an .Island, which Deck draws with a border the zoom and undo
    panels do not have) the height of Excalidraw's large buttons. */
@@ -370,6 +393,37 @@ const Loading = () => (
 );
 
 /** One board: an Excalidraw scene stored under `storeKey`, its pictures beside it. */
+/**
+ * Whether boards show a grid and snap to it: one choice for every board, kept in canvas-grid.
+ * A grid is shown by default, without snapping.
+ */
+function useGrid(): [{ show: boolean; snap: boolean }, (next: { show: boolean; snap: boolean }) => void] {
+  const [grid, setGrid] = useState({ show: true, snap: false });
+  useEffect(() => {
+    configRead("canvas-grid").then((t) => { if (t.trim()) setGrid((g) => ({ ...g, ...JSON.parse(t) })); }).catch(() => {});
+  }, []);
+  return [grid, (next) => { setGrid(next); void configWrite("canvas-grid", JSON.stringify(next)).catch(() => {}); }];
+}
+
+/** Whether Deck's background is light, following it as the theme changes (the deck-surface event
+ *  applyTheme sends). The same test Deck's editor theme uses: relative luminance over 0.4. */
+function useLightBackground(): boolean {
+  const read = () => isLight(getComputedStyle(document.documentElement).getPropertyValue("--bg-app"));
+  const [light, setLight] = useState(read);
+  useEffect(() => {
+    const on = (e: Event) => setLight(isLight((e as CustomEvent<{ app: string }>).detail?.app ?? ""));
+    window.addEventListener("deck-surface", on);
+    return () => window.removeEventListener("deck-surface", on);
+  }, []);
+  return light;
+}
+function isLight(hex: string): boolean {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex.trim());
+  if (!m) return false;
+  const lin = (c: string) => { const v = parseInt(c, 16) / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(m[1]) + 0.7152 * lin(m[2]) + 0.0722 * lin(m[3]) > 0.4;
+}
+
 function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName, onReload, onSaveCopy, onHost, onJoin, onStop, onRejoin, offer, onResume, onDismissOffer, project }: {
   storeKey: string;
   /** The project, which the live share is kept under. */
@@ -402,6 +456,22 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   const [saving, setSaving] = useState(false);
   const [scripts, setScripts] = useState<ScriptJob[]>([]);
   const apiRef = useRef<any>(null);
+  const light = useLightBackground();
+  const [grid, setGridState] = useGrid();
+  // The grid's lines follow the scene as it pans and zooms. Written straight onto the box as CSS
+  // variables on every change, rather than through React state: a pan is many changes a second.
+  const gridBox = useRef<HTMLDivElement>(null);
+  const placeGrid = (st: any) => {
+    const el = gridBox.current;
+    if (!el || !st) return;
+    const z = st.zoom?.value ?? 1, g = (st.gridSize || 20) * z, step = st.gridStep || 5;
+    el.style.setProperty("--grid-x", `${(st.scrollX ?? 0) * z}px`);
+    el.style.setProperty("--grid-y", `${(st.scrollY ?? 0) * z}px`);
+    el.style.setProperty("--grid-minor-size", `${g}px`);
+    el.style.setProperty("--grid-major-size", `${g * step}px`);
+    // Too dense to read when zoomed far out: only the major lines, as Excalidraw does.
+    el.style.setProperty("--grid-minor", g < 10 ? "transparent" : "color-mix(in srgb, var(--text-primary) 6%, transparent)");
+  };
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // Last JSON written. serializeAsJSON drops transient appState (scroll/zoom/active tool), so a
   // pure pan or selection serialises identically — without this the save indicator never settles.
@@ -568,6 +638,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   };
 
   const onChange = (elements: readonly any[], appState: any, files: any) => {
+    placeGrid(appState);
     // Excalidraw gates an embeddable's inner content behind an activation click: the first
     // press only selects the element, so a button needed two clicks to fire. Promoting it to
     // "active" as soon as it is hovered means the press lands on the button itself.
@@ -627,10 +698,19 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   return (
     <div className="deck-canvas relative flex h-full min-w-0 flex-1 flex-col overflow-hidden"
       onPointerMoveCapture={syncOffsets} onPointerEnter={syncOffsets}>
+      {/* Behind the scene, which Excalidraw draws on a transparent background. */}
+      <div ref={gridBox} aria-hidden className="deck-grid pointer-events-none absolute inset-0"
+        style={{ display: grid.show && !grid.snap ? undefined : "none" }} />
       <Excalidraw
         initialData={initialData}
+        // Excalidraw's own light or dark, to match Deck's background: its toolbar, zoom and
+        // share buttons are drawn for one or the other, and the dark set was pale on a light page.
+        theme={light ? "light" : "dark"}
         onChange={onChange}
-        onExcalidrawAPI={(api: any) => { apiRef.current = api; liveRef.current?.attach(api); }}
+        onExcalidrawAPI={(api: any) => { apiRef.current = api; liveRef.current?.attach(api); if (api) requestAnimationFrame(() => placeGrid(apiRef.current?.getAppState())); }}
+        // Snapping is Excalidraw's grid mode, which also draws its own grid: so it is on only
+        // while both the grid and snapping are, and our grid steps aside while it is.
+        gridModeEnabled={grid.show && grid.snap}
         isCollaborating={!!share}
         viewModeEnabled={!!share && !view.canEdit}
         onPointerUpdate={((p: any) => liveRef.current?.pointer(p)) as any}
@@ -652,6 +732,21 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
             />
           );
         }}
+        // The grid and snapping to it, from two buttons at the top right. The same for every
+        // board, so turning it on once is enough.
+        renderTopRightUI={() => (
+          <div className="flex gap-1">
+            <button onClick={() => setGridState({ ...grid, show: !grid.show })}
+              title={grid.show ? "Hide the grid" : "Show the grid"} aria-pressed={grid.show} className="deck-grid-toggle">
+              <Grid3x3 size={16} />
+            </button>
+            <button onClick={() => setGridState({ ...grid, snap: !grid.snap })} disabled={!grid.show}
+              title={!grid.show ? "Snap to the grid: show the grid first" : grid.snap ? "Stop snapping to the grid" : "Snap to the grid (hold Ctrl to move freely)"}
+              aria-pressed={grid.show && grid.snap} className="deck-grid-toggle">
+              <Magnet size={16} />
+            </button>
+          </div>
+        )}
         UIOptions={{
           canvasActions: {
             // A board is per-project and autosaved; loading someone else's scene over it or
