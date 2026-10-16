@@ -170,7 +170,7 @@ export class LiveShare {
     const files = { ...this.scene.files };
     for (const f of got) files[f.id] = f;
     this.scene = { ...this.scene, files };
-    if (this.boardKey) void configWrite(filesKey(this.boardKey), JSON.stringify(files)).catch(() => {});
+    if (this.boardKey) void configWrite(filesKey(this.boardKey), JSON.stringify(files)).catch((e) => console.warn("[canvas] pictures save failed", e));
   }
 
   /** Off screen, the host's board is still saved as edits arrive, as it would be on screen. */
@@ -180,7 +180,7 @@ export class LiveShare {
     this.saveTimer = setTimeout(() => {
       if (this.api || this.closed) return; // back on screen: the board saves itself
       const json = serializeAsJSON(this.scene.elements.filter((e) => !e.isDeleted), this.scene.appState ?? {}, {}, "local");
-      void configWrite(this.boardKey, json).catch(() => {});
+      void configWrite(this.boardKey, json).catch((e) => console.warn("[canvas] board save failed", e));
     }, 800);
   }
 

@@ -175,7 +175,7 @@ const decodeButton = (link: string): { action: ButtonAction; arg: string } | nul
 
 /** A URL goes to the browser; anything else is a path for the OS default handler. */
 const openOne = (target: string) =>
-  /^[a-z]+:\/\//i.test(target) ? openExternal(target).catch(() => {}) : openFile(target).catch(() => {});
+  /^[a-z]+:\/\//i.test(target) ? openExternal(target).catch((e) => console.warn("[canvas] open link failed", e)) : openFile(target).catch((e) => console.warn("[canvas] open file failed", e));
 
 // A pane view only: boards belong to a workspace's folder, which a pane is given.
 export function PaneView({ cwd, runInTerminal }: {
@@ -234,13 +234,13 @@ export function PaneView({ cwd, runInTerminal }: {
       const want = lastBoard.get(project);
       setBoards(list.length ? list : DEFAULT_BOARDS);
       setActive(want !== undefined && list.some((b) => b.id === want) ? want : list[0]?.id ?? "");
-    }).catch(() => { if (alive) { setBoards(DEFAULT_BOARDS); setActive(""); } });
+    }).catch((e) => { console.warn("[canvas] boards load failed", e); if (alive) { setBoards(DEFAULT_BOARDS); setActive(""); } });
     return () => { alive = false; };
   }, [project]);
 
   const save = (next: BoardRef[]) => {
     setBoards(next);
-    void configWrite(boardsKey(project), JSON.stringify(next)).catch(() => {});
+    void configWrite(boardsKey(project), JSON.stringify(next)).catch((e) => console.warn("[canvas] boards save failed", e));
   };
   const open = (id: string) => {
     // Hosting is of one board: going to another ends it. Its backup stays on disk, so coming
@@ -273,9 +273,9 @@ export function PaneView({ cwd, runInTerminal }: {
       onConfirm: () => {
         // An empty write removes the file (see the config writer in Deck).
         const key = sceneKey(project, id);
-        void configWrite(key, "").catch(() => {});
-        void configWrite(filesKey(key), "").catch(() => {});
-        void configWrite(backupKey(key), "").catch(() => {});
+        void configWrite(key, "").catch((e) => console.warn("[canvas] board delete failed", e));
+        void configWrite(filesKey(key), "").catch((e) => console.warn("[canvas] board delete failed", e));
+        void configWrite(backupKey(key), "").catch((e) => console.warn("[canvas] board delete failed", e));
         const rest = boards.filter((x) => x.id !== id);
         // The last board is cleared rather than left as no board at all.
         save(rest.length ? rest : DEFAULT_BOARDS);
@@ -295,12 +295,12 @@ export function PaneView({ cwd, runInTerminal }: {
   const addCopy = async (name: string, scene: string, files: string, after: string) => {
     const b = { id: newId(), name: freeName(name) };
     const key = sceneKey(project, b.id);
-    await configWrite(key, scene).catch(() => {});
-    if (files.trim()) await configWrite(filesKey(key), files).catch(() => {});
+    await configWrite(key, scene).catch((e) => console.warn("[canvas] board copy save failed", e));
+    if (files.trim()) await configWrite(filesKey(key), files).catch((e) => console.warn("[canvas] board copy save failed", e));
     setBoards((list) => {
       const next = [...(list ?? boards)];
       next.splice(next.findIndex((x) => x.id === after) + 1, 0, b);
-      void configWrite(boardsKey(project), JSON.stringify(next)).catch(() => {});
+      void configWrite(boardsKey(project), JSON.stringify(next)).catch((e) => console.warn("[canvas] boards save failed", e));
       return next;
     });
     return b;
@@ -311,7 +311,7 @@ export function PaneView({ cwd, runInTerminal }: {
     const b = boards.find((x) => x.id === id);
     if (!b) return;
     const key = sceneKey(project, id);
-    const [scene, files] = await Promise.all([configRead(key).catch(() => ""), configRead(filesKey(key)).catch(() => "")]);
+    const [scene, files] = await Promise.all([configRead(key).catch((e) => { console.warn("[canvas] board read failed", e); return ""; }), configRead(filesKey(key)).catch((e) => { console.warn("[canvas] board read failed", e); return ""; })]);
     open((await addCopy(`${b.name} copy`, scene, files, id)).id);
   };
 
@@ -400,9 +400,9 @@ const Loading = () => (
 function useGrid(): [{ show: boolean; snap: boolean }, (next: { show: boolean; snap: boolean }) => void] {
   const [grid, setGrid] = useState({ show: true, snap: false });
   useEffect(() => {
-    configRead("canvas-grid").then((t) => { if (t.trim()) setGrid((g) => ({ ...g, ...JSON.parse(t) })); }).catch(() => {});
+    configRead("canvas-grid").then((t) => { if (t.trim()) setGrid((g) => ({ ...g, ...JSON.parse(t) })); }).catch((e) => console.warn("[canvas] grid settings load failed", e));
   }, []);
-  return [grid, (next) => { setGrid(next); void configWrite("canvas-grid", JSON.stringify(next)).catch(() => {}); }];
+  return [grid, (next) => { setGrid(next); void configWrite("canvas-grid", JSON.stringify(next)).catch((e) => console.warn("[canvas] grid settings save failed", e)); }];
 }
 
 /** Whether Deck's background is light, following it as the theme changes (the deck-surface event
@@ -483,7 +483,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   const pending = useRef<string | null>(null);
   useEffect(() => () => {
     clearTimeout(saveTimer.current);
-    if (pending.current !== null) void configWrite(key, pending.current).catch(() => {});
+    if (pending.current !== null) void configWrite(key, pending.current).catch((e) => console.warn("[canvas] board save failed", e));
   }, [key]);
 
   // Script jobs resolve at CLICK time rather than being baked into the element: renaming or
@@ -492,7 +492,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   const scriptsRef = useRef<ScriptJob[]>([]);
   scriptsRef.current = scripts;
   useEffect(() => {
-    configRead("script-runner").then((t) => setScripts(t.trim() ? JSON.parse(t) : [])).catch(() => {});
+    configRead("data/script-runner/script-runner").then((t) => setScripts(t.trim() ? JSON.parse(t) : [])).catch((e) => console.warn("[canvas] script jobs load failed", e));
   }, []);
 
   useEffect(() => {
@@ -514,7 +514,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
       setLoading(false);
       return;
     }
-    Promise.all([configRead(key), configRead(filesKey(key)).catch(() => "")]).then(([t, f]) => {
+    Promise.all([configRead(key), configRead(filesKey(key)).catch((e) => { console.warn("[canvas] pictures load failed", e); return ""; })]).then(([t, f]) => {
       if (!alive) return;
       const scene = t.trim() ? JSON.parse(t) : { elements: [], appState: {}, files: {} };
       // collaborators must be a Map or absent — persisted junk here breaks Excalidraw's restore.
@@ -527,7 +527,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
       // land in order, so this is on disk before the scene is next saved without them.
       if (scene.files && Object.keys(scene.files).length) {
         files = { ...scene.files, ...files };
-        void configWrite(filesKey(key), JSON.stringify(files)).catch(() => {});
+        void configWrite(filesKey(key), JSON.stringify(files)).catch((e) => console.warn("[canvas] pictures save failed", e));
       }
       savedFileIds.current = new Set(Object.keys(files));
       lastSaved.current = serializeAsJSON(scene.elements ?? [], appState, {}, "local");
@@ -542,7 +542,8 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
       // Not while hosting it can be resumed: the backup is still that share's, and Dismiss on the
       // offer brings this choice back.
       if (!offerRef.current?.host && !shareRef.current?.host) configRead(backupKey(key)).then((b) => { if (alive && b.trim()) setEnding("leftover"); }).catch(() => {});
-    }).catch(() => {
+    }).catch((e) => {
+      console.warn("[canvas] board load failed", e);
       if (!alive) return;
       setInitialData({ elements: [], appState: { theme: "dark", viewBackgroundColor: "transparent" }, files: {} });
       setLoading(false);
@@ -565,22 +566,22 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
       at: Date.now(),
     };
     configRead(backupKey(key)).catch(() => "").then((had) => {
-      if (!had.trim()) void configWrite(backupKey(key), JSON.stringify(snapshot)).catch(() => {});
+      if (!had.trim()) void configWrite(backupKey(key), JSON.stringify(snapshot)).catch((e) => console.warn("[canvas] backup save failed", e));
     });
   }, [share?.code]);
 
-  const dropBackup = () => configWrite(backupKey(key), "").catch(() => {});
+  const dropBackup = () => configWrite(backupKey(key), "").catch((e) => console.warn("[canvas] backup delete failed", e));
 
   /** Put the board back as it was before sharing, from the backup on disk. */
   const restore = async () => {
-    const raw = await configRead(backupKey(key)).catch(() => "");
+    const raw = await configRead(backupKey(key)).catch((e) => { console.warn("[canvas] backup read failed", e); return ""; });
     if (!raw.trim()) return;
     const b: Backup = JSON.parse(raw);
     // Whatever is waiting to be saved belongs to the version being thrown away.
     clearTimeout(saveTimer.current);
     pending.current = null;
-    await configWrite(key, b.scene).catch(() => {});
-    await configWrite(filesKey(key), b.files).catch(() => {});
+    await configWrite(key, b.scene).catch((e) => console.warn("[canvas] restore failed", e));
+    await configWrite(filesKey(key), b.files).catch((e) => console.warn("[canvas] restore failed", e));
     await dropBackup();
     onReload();
   };
@@ -657,7 +658,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
     const ids = Object.keys(files ?? {});
     if (ids.some((id) => !savedFileIds.current.has(id))) {
       savedFileIds.current = new Set(ids);
-      void configWrite(filesKey(key), JSON.stringify(files)).catch(() => {});
+      void configWrite(filesKey(key), JSON.stringify(files)).catch((e) => console.warn("[canvas] pictures save failed", e));
     }
     // The scene without the pictures: a few kilobytes, so serialising it on every change is cheap.
     const json = serializeAsJSON(elements as any, appState, {}, "local");
@@ -667,7 +668,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
     pending.current = json;
     saveTimer.current = setTimeout(async () => {
       pending.current = null;
-      await configWrite(key, json).catch(() => {});
+      await configWrite(key, json).catch((e) => console.warn("[canvas] board save failed", e));
       lastSaved.current = json;
       setSaving(false);
     }, 800);
@@ -874,7 +875,7 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
           ) : <span className="deck-share-text">{status}</span>}
           {share.host && (
             <button className="font-mono" title="Copy the code"
-              onClick={() => { void navigator.clipboard.writeText(share.code); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>
+              onClick={() => { void navigator.clipboard.writeText(share.code).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }, () => {}); }}>
               {share.code} {copied ? <Check /> : <Copy />}
             </button>
           )}
