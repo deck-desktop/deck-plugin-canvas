@@ -7,10 +7,11 @@
     "build": "deck-plugin build",
     "dev": "deck-plugin dev",
     "install-local": "deck-plugin install",
-    "check": "node src/sync.check.mjs"
+    "test": "node src/sync.check.mjs"
   },
   "devDependencies": {
     "@excalidraw/excalidraw": "0.18.0-4ce38fb",
+    "@tauri-apps/api": "^2.11.1",
     "@types/node": "^26.5.1",
     "@types/react": "^19.2.18",
     "deck-plugin-sdk": "file:D:/Flutter/personal/deck/sdk",
@@ -18,6 +19,6 @@
     "framer-motion": "^13.1.0",
     "lucide-react": "^1.31.0",
     "react": "^19.2.8",
-    "typescript": "^5.8.3"
+    "typescript": "~5.8.3"
   }
 }
