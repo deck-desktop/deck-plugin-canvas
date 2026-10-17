@@ -14,7 +14,7 @@
 // src/core/p2p.ts). This file is what a board adds on top: keeping two Excalidraw scenes the same.
 import { serializeAsJSON, reconcileElements, CaptureUpdateAction, getSceneVersion } from "@excalidraw/excalidraw";
 import { configWrite } from "../shim/bridge.js";
-import { toast } from "../shim/ui.js";
+import { notify, dismissNotification } from "../shim/ui.js";
 import { share as startShare, type Json, type Mode, type P2pShare, type ShareView } from "../shim/p2p.js";
 import { joinStroke, markSeen, strokeTail, takeChanged, takeNewFiles, SHARE_VERSION, type Seen } from "./sync";
 
@@ -90,13 +90,17 @@ export class LiveShare {
   private syncTimer: ReturnType<typeof setInterval>;
   private saveTimer?: ReturnType<typeof setTimeout>;
   private closed = false;
-  // Toasts saying someone wants to join, raised while the board is off screen: the bar that lets
-  // them in is not visible then. Taken down once they are let in, turned away, or the board shows.
-  private knockToasts = new Map<string, () => void>();
+  /** The board's name, for the notification saying someone wants to join it. */
+  private boardName: string;
+  // People whose request to join is up as a notification, by peer id, so a view change (a ping
+  // measured) does not post it again with another chime. Taken down once they are let in, turned
+  // away (from the notification or the board's bar), give up, or the share ends.
+  private knockNotes = new Set<string>();
 
-  constructor(share: Share, boardKey: string, scene: Scene) {
+  constructor(share: Share, boardKey: string, boardName: string, scene: Scene) {
     this.share = share;
     this.boardKey = share.host ? boardKey : "";
+    this.boardName = boardName;
     this.scene = scene;
     // What is on the board now is what someone let in gets in full, not an edit to broadcast;
     // the same for its pictures, which go to them in their welcome.
@@ -115,7 +119,7 @@ export class LiveShare {
     // board stays on screen until the guest chooses what to keep.
     this.s.subscribe(() => {
       if (this.view.gone) void this.close();
-      this.toastKnocks();
+      this.notifyKnocks();
     });
     this.syncTimer = setInterval(() => this.fullSync(), FULL_SYNC_MS);
   }
@@ -130,12 +134,14 @@ export class LiveShare {
   attach(api: any) {
     this.api = api;
     this.showCursors();
-    this.toastKnocks();
+    // On screen, the board's own bar shows who is asking: the notifications would say it twice.
+    this.notifyKnocks();
   }
 
   /** The board went off screen: keep working on the last scene it showed. */
   detach(api: any) {
     if (this.api === api) this.api = null;
+    this.notifyKnocks();
   }
 
   /** Called from the board's onChange, so the copy kept for off screen is always the latest. */
@@ -284,12 +290,24 @@ export class LiveShare {
     for (const f of send) void this.s.send({ t: "files", files: [f as any] }, peer);
   }
 
-  private toastKnocks() {
-    const knocking = new Set(this.api || this.closed ? [] : this.view.knocking.map((p) => p.id));
-    for (const [id, dismiss] of this.knockToasts) if (!knocking.has(id)) { dismiss(); this.knockToasts.delete(id); }
-    for (const p of this.view.knocking) {
-      if (!knocking.has(p.id) || this.knockToasts.has(p.id)) continue;
-      this.knockToasts.set(p.id, toast(`${p.name} wants to join your shared board: open it in Canvas to let them in`, "info", { ms: 0 }));
+  /** Someone asking to join, as a notification with Let in and Deny on it: on screen or not, the
+   *  board's bar is no use while Deck is behind another window, and Deck reaches Windows then. */
+  /** Join requests as Deck notifications, only while the board is off screen: on it, its bar asks. */
+  private notifyKnocks() {
+    const knocking = this.closed || this.api ? [] : this.view.knocking;
+    for (const id of this.knockNotes) {
+      if (knocking.some((p) => p.id === id)) continue;
+      dismissNotification("Canvas", id);
+      this.knockNotes.delete(id);
+    }
+    for (const p of knocking) {
+      if (this.knockNotes.has(p.id)) continue;
+      this.knockNotes.add(p.id);
+      notify({
+        kind: "attention", source: "Canvas", key: p.id,
+        title: `${p.name} wants to join ${this.boardName}`,
+        actions: [{ label: "Let in", primary: true, run: () => this.allow(p.id) }, { label: "Deny", run: () => this.deny(p.id) }],
+      });
     }
   }
 
@@ -314,7 +332,7 @@ export class LiveShare {
     this.closed = true;
     clearInterval(this.syncTimer);
     this.cursors.clear();
-    this.toastKnocks();
+    this.notifyKnocks();
     this.showCursors();
     await this.s.close(announce);
   }

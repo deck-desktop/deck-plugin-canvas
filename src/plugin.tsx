@@ -615,7 +615,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
     if (!l || !l.matches(share)) {
       if (l) void l.close();
       const a = apiRef.current;
-      l = new LiveShare(share, key, a
+      l = new LiveShare(share, key, boardName, a
         ? { elements: a.getSceneElementsIncludingDeleted(), appState: a.getAppState(), files: a.getFiles() ?? {} }
         : { elements: [], appState: {}, files: {} });
       lives.set(project, l);
