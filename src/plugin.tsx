@@ -333,7 +333,7 @@ export function PaneView({ cwd, runInTerminal }: {
         e.preventDefault();
         setTabMenu({ x: e.clientX, y: e.clientY, id });
       }}>
-      <TabStrip pill
+      <TabStrip chip
         tabs={boards.map((b) => ({ id: b.id, title: b.name, closeTitle: "Delete board" }))}
         activeId={active}
         onSelect={open}
@@ -806,6 +806,12 @@ function DeckButton({ label, action, arg, scripts, onRun }: {
   );
 }
 
+/** A choice in the end-of-sharing dialogs: a title and what it does, on the elevated surface. */
+const CHOICE = "flex w-full flex-col items-start rounded-lg border border-subtle bg-elev px-3 py-2 text-left transition-colors hover:border-strong";
+/** The dialogs' title and their line under it. */
+const DIALOG_TITLE = "mb-1 text-[13px] font-medium text-text-primary";
+const DIALOG_BODY = "mb-3 text-[12px] leading-relaxed text-text-muted";
+
 /** A round trip above this is a slow connection: the dot in the bar turns amber. */
 const SLOW_MS = 250;
 
@@ -845,7 +851,7 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
   const [copied, setCopied] = useState(false);
   const [people, setPeople] = useState<{ x: number; y: number } | null>(null);
   const status = <>
-    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: !peers.length || peers.some((p) => (p.ms ?? 0) > SLOW_MS) ? "#fbbf24" : "#4ade80" }} />
+    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: !peers.length || peers.some((p) => (p.ms ?? 0) > SLOW_MS) ? "rgb(var(--tone-amber-400))" : "rgb(var(--tone-green-400))" }} />
     {stuck && !peers.length ? "Can't reach the board: check the code, or your network"
       : waiting ? `Waiting for ${hostName} to let you in…`
       : <>{share?.host ? "Sharing" : "Joined"}{!canEdit ? " · view only" : ""} · {peers.length ? `with ${peers.map((p) => (p.ms === undefined ? p.name : `${p.name} · ${p.ms} ms`)).join(", ")}` : share?.host ? "waiting for someone" : "connecting…"}</>}
@@ -892,7 +898,7 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
         </div>
       ))}
       {note && <span className="text-[11px] text-text-muted">{note}</span>}
-      {saving && <span className="text-[11px] text-text-muted">saving…</span>}
+      {saving && <span className="text-[11px] text-text-muted">Saving…</span>}
       {people && (
         <ContextMenu x={people.x} y={people.y} up onClose={() => setPeople(null)}
           items={[
@@ -922,35 +928,34 @@ function ShareEndDialog({ leftover, onChoose, onCancel }: {
   onChoose: (choice: "keep" | "restore" | "both") => void;
   onCancel: () => void;
 }) {
-  const row = "flex w-full flex-col items-start rounded-lg border border-subtle px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]";
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.45)" }}
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className="w-[380px] rounded-xl border border-subtle p-4 shadow-xl" style={{ background: "var(--bg-elev)" }}>
-        <div className="mb-1 text-sm font-medium text-text-primary">
+      <div className="w-[380px] rounded-xl border border-subtle p-4 shadow-2xl" style={{ background: "var(--bg-card)" }}>
+        <div className={DIALOG_TITLE}>
           {leftover ? "This board was shared" : "Stop sharing"}
         </div>
-        <p className="mb-3 text-xs text-text-muted">
+        <p className={DIALOG_BODY}>
           {leftover
             ? "A copy of how it looked before sharing was kept. What do you want to keep?"
             : "A copy of how this board looked before sharing was kept. What do you want to keep?"}
         </p>
         <div className="flex flex-col gap-1.5">
-          <button className={row} onClick={() => onChoose("keep")}>
-            <span className="text-[13px] text-text-primary">Keep the changes</span>
+          <button className={CHOICE} onClick={() => onChoose("keep")}>
+            <span className="text-[12.5px] text-text-primary">Keep the changes</span>
             <span className="text-[11px] text-text-muted">The board stays as it is now; the copy is thrown away.</span>
           </button>
-          <button className={row} onClick={() => onChoose("restore")}>
-            <span className="text-[13px] text-text-primary">Go back to before sharing</span>
+          <button className={CHOICE} onClick={() => onChoose("restore")}>
+            <span className="text-[12.5px] text-text-primary">Go back to before sharing</span>
             <span className="text-[11px] text-text-muted">Everything drawn while shared is discarded.</span>
           </button>
-          <button className={row} onClick={() => onChoose("both")}>
-            <span className="text-[13px] text-text-primary">Keep both</span>
+          <button className={CHOICE} onClick={() => onChoose("both")}>
+            <span className="text-[12.5px] text-text-primary">Keep both</span>
             <span className="text-[11px] text-text-muted">This board goes back; the shared version becomes a new board beside it.</span>
           </button>
         </div>
         <div className="mt-3 flex justify-end">
-          <button className="text-xs text-text-muted hover:text-text-primary" onClick={onCancel}>
+          <button className="rounded-lg px-3 py-1.5 text-xs text-text-muted transition-colors hover:text-text-primary" onClick={onCancel}>
             {leftover ? "Decide later" : "Keep sharing"}
           </button>
         </div>
@@ -968,16 +973,15 @@ function HostGoneDialog({ why, host, onKeep, onClose, onRejoin }: {
   /** Offered when the connection dropped: the host may still be sharing. */
   onRejoin: () => void;
 }) {
-  const row = "flex w-full flex-col items-start rounded-lg border border-subtle px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]";
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.45)" }}>
-      <div className="w-[380px] rounded-xl border border-subtle p-4 shadow-xl" style={{ background: "var(--bg-elev)" }}>
-        <div className="mb-1 text-sm font-medium text-text-primary">
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40">
+      <div className="w-[380px] rounded-xl border border-subtle p-4 shadow-2xl" style={{ background: "var(--bg-card)" }}>
+        <div className={DIALOG_TITLE}>
           {why === "ended" ? `${host} stopped sharing` : why === "removed" ? `${host} removed you from the board`
             : why === "denied" ? `${host} didn't let you in`
             : why === "version" ? `${host} has a different Canvas version` : `Lost the connection to ${host}`}
         </div>
-        <p className="mb-3 text-xs text-text-muted">
+        <p className={DIALOG_BODY}>
           {why === "version"
             ? "Both of you need the same Canvas build to share a board. Update Canvas, then join again."
             : why === "denied" ? "Ask them to share again if that was a mistake."
@@ -985,17 +989,17 @@ function HostGoneDialog({ why, host, onKeep, onClose, onRejoin }: {
         </p>
         <div className="flex flex-col gap-1.5">
           {why === "lost" && (
-            <button className={row} onClick={onRejoin}>
-              <span className="text-[13px] text-text-primary">Rejoin</span>
+            <button className={CHOICE} onClick={onRejoin}>
+              <span className="text-[12.5px] text-text-primary">Rejoin</span>
               <span className="text-[11px] text-text-muted">Connect to {host}'s board again, if they are still sharing.</span>
             </button>
           )}
-          {why !== "denied" && <button className={row} onClick={onKeep}>
-            <span className="text-[13px] text-text-primary">Keep a copy</span>
+          {why !== "denied" && <button className={CHOICE} onClick={onKeep}>
+            <span className="text-[12.5px] text-text-primary">Keep a copy</span>
             <span className="text-[11px] text-text-muted">Saved as a new board here, "{host}'s board".</span>
           </button>}
-          <button className={row} onClick={onClose}>
-            <span className="text-[13px] text-text-primary">Close</span>
+          <button className={CHOICE} onClick={onClose}>
+            <span className="text-[12.5px] text-text-primary">Close</span>
             <span className="text-[11px] text-text-muted">Back to your own boards.</span>
           </button>
         </div>
