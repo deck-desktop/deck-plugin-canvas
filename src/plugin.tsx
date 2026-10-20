@@ -461,6 +461,8 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   // The grid's lines follow the scene as it pans and zooms. Written straight onto the box as CSS
   // variables on every change, rather than through React state: a pan is many changes a second.
   const gridBox = useRef<HTMLDivElement>(null);
+  // The document the board is drawn in (see ownerDocument below), known once the box is mounted.
+  const [doc, setDoc] = useState<Document | null>(null);
   const placeGrid = (st: any) => {
     const el = gridBox.current;
     if (!el || !st) return;
@@ -698,11 +700,16 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
 
   return (
     <div className="deck-canvas relative flex h-full min-w-0 flex-1 flex-col overflow-hidden"
+      ref={(el) => { if (el && el.ownerDocument !== doc) setDoc(el.ownerDocument); }}
       onPointerMoveCapture={syncOffsets} onPointerEnter={syncOffsets}>
       {/* Behind the scene, which Excalidraw draws on a transparent background. */}
       <div ref={gridBox} aria-hidden className="deck-grid pointer-events-none absolute inset-0"
         style={{ display: grid.show && !grid.snap ? undefined : "none" }} />
-      <Excalidraw
+      {doc && <Excalidraw
+        // The document the board is drawn in: Deck's main window's, or a floating window's.
+        // Excalidraw listens for pointer moves and keys on the one it is given, and takes the main
+        // page's unless told, so in a floating window it heard nothing and drew nothing.
+        ownerDocument={doc}
         initialData={initialData}
         // Excalidraw's own light or dark, to match Deck's background: its toolbar, zoom and
         // share buttons are drawn for one or the other, and the dark set was pale on a light page.
@@ -766,7 +773,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
             onHost={onHost} onJoin={onJoin} onStop={share?.host ? () => setEnding("stop") : onStop}
             offer={offer} onResume={onResume} onDismissOffer={onDismissOffer} />
         </Footer>
-      </Excalidraw>
+      </Excalidraw>}
 
       {/* The Link and Button entries that used to sit here were removed as unused. Buttons
           already on a board still work — runButton, decodeButton and AddButtonForm are all
