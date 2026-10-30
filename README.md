@@ -1,15 +1,24 @@
 # Canvas for Deck
 
-Excalidraw boards for each project, in a pane: sketch, diagram, paste screenshots and links.
-Open it from the **+** beside your tabs, or a pane's menu, and choose **Canvas**.
+Excalidraw boards for each project, in a pane: sketch, diagram, paste screenshots and links, and
+draw on a board live with other Decks. Open it from the **+** beside your tabs, or a pane's menu,
+and choose **Canvas**.
+
+![Canvas](docs/screenshot.png)
+
+## Boards
 
 Each workspace folder has its own boards, shown as tabs:
 
 - **+** after the last tab makes a board; double-click a tab to rename it; the X deletes it.
 - Right-click a tab to rename, duplicate or delete it.
 - Drag a tab to reorder.
-- Boards save as you draw, in Deck's own config on this machine (`canvas-<project>.json`, with
-  pasted pictures in a `-files` file beside it). They do not sync.
+- The buttons at the top right show a grid and snap to it (hold Ctrl to move freely), for every
+  board.
+
+Boards save as you draw, in Deck's config on this machine: a `canvas-<project>` file per board,
+with its pasted pictures in a `-files` file beside it, and the grid choice in `canvas-grid`. They
+do not sync.
 
 ## Drawing together
 
@@ -21,8 +30,9 @@ public Nostr relays that only ever see an encrypted handshake.
 - **Joining** asks for the code, then waits for the host to let you in.
 - The others see your name from Deck's Settings > General (empty uses your Google account's name,
   else your Windows account's).
-- The host sees "*name* wants to join" in the bar, with **Let in** and ✕. Nobody is sent the
-  board until let in, so a code that ends up in the wrong place lets no one in by itself.
+- The host sees "*name* wants to join" in the bar, with **Let in** and ✕, or as a notification
+  with **Let in** and **Deny** while the board is off screen. Nobody is sent the board until let in, so a code that
+  ends up in the wrong place lets no one in by itself.
 - While shared you see each other's cursors, names, laser pointer and pictures (up to 4 MB each),
   and the bar shows each connection's round trip in ms.
 - Click the bar's status to let everyone edit or not, set one person to edit or view only, or
