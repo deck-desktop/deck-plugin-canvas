@@ -1,7 +1,7 @@
 {
   "id": "canvas",
   "name": "Canvas",
-  "description": "Excalidraw boards for each project, as tabs in a pane: sketch, diagram, paste screenshots and links, and share a board live with other Decks. Formerly Deck's Pinboard; existing boards carry over.",
+  "description": "Excalidraw boards for each project, as tabs in a pane: sketch, diagram, paste screenshots and links, and share a board with your Deck team. Formerly Deck's Pinboard; existing boards carry over.",
   "icon": "Pin",
   "color": "#f472b6",
   "version": "1.5.0",
