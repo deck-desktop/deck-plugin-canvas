@@ -31,7 +31,8 @@ shared they stay shared: there is no invite to send and no host to wait for.
 - Each member keeps a copy. Whenever two of you are online together the copies are brought in
   step, shape by shape, so what was drawn while you were apart arrives when you meet.
 - A board open on two Decks follows along as it is drawn, with each other's cursors and names. The
-  bottom of the board says whose it is and who else has it open.
+  bottom of the board says whose it is and who else has it open, each with their round trip in ms
+  (amber over 250).
 - Rename it and the others see the new name. **Delete** removes it for everyone; **Stop sharing
   with the team** keeps a copy in this project and removes it for the others.
 - Buttons that run something on this machine, and embedded web pages, are never shared, and none

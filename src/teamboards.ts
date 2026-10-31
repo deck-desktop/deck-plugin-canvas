@@ -26,7 +26,10 @@ type Msg =
   | { t: "files"; id: string; files: unknown[] }
   /** This Deck has the board on screen, or no longer: pointers go only to those who do. */
   | { t: "view"; id: string; on: boolean }
-  | { t: "ptr"; id: string; x: number; y: number; button: "up" | "down"; tool: "pointer" | "laser" };
+  | { t: "ptr"; id: string; x: number; y: number; button: "up" | "down"; tool: "pointer" | "laser" }
+  /** A round trip, timed by whoever sent the ping: shown beside each name in the footer. */
+  | { t: "ping"; id: string; n: number }
+  | { t: "pong"; id: string; n: number };
 
 const LIST = "team-boards";
 export const teamBoardKey = (id: string) => `teamboard_${id}`;
@@ -178,6 +181,18 @@ async function onMsg(team: string, msg: Msg, from: Member) {
     emit();
     return;
   }
+  if (msg.t === "ping") {
+    if (typeof msg.n === "number") void ch?.send({ t: "pong", id: board.id, n: msg.n }, from.id);
+    return;
+  }
+  if (msg.t === "pong") {
+    const sent = typeof msg.n === "number" ? pings.get(`${from.id}:${msg.n}`) : undefined;
+    if (sent === undefined) return;
+    pings.delete(`${from.id}:${msg.n}`);
+    const ms = Math.round(performance.now() - sent);
+    if (rtt.get(from.id) !== ms) { rtt.set(from.id, ms); emit(); }
+    return;
+  }
   if (msg.t === "ptr") {
     const api = open.get(board.id);
     if (!api || typeof msg.x !== "number" || typeof msg.y !== "number" || !Number.isFinite(msg.x) || !Number.isFinite(msg.y)) return;
@@ -258,16 +273,40 @@ function dropCursor(id: string, member: string) {
 }
 /** A member went offline: they look at nothing, and their pointers go. */
 function gone(member: string) {
+  rtt.delete(member);
   for (const [id, v] of viewers) { v.delete(member); dropCursor(id, member); }
   emit();
 }
 
-/** The names of the others who have a shared board open now. */
-export function boardViewers(id: string): string[] {
+/** The others who have a shared board open now, with their last round trip in ms when known. */
+export function boardViewers(id: string): { name: string; ms?: number }[] {
   const ids = viewers.get(id);
   if (!ids?.size) return [];
   const members = teamsView().flatMap((t) => t.members);
-  return [...ids].map((m) => members.find((x) => x.id === m)?.name ?? "someone");
+  return [...ids].map((m) => ({ name: members.find((x) => x.id === m)?.name ?? "someone", ms: rtt.get(m) }));
+}
+
+// ---- round trips to those looking at the same board, every 2 s while one is open here ----
+
+/** Pings sent and not answered yet, by "<member>:<n>", with when they went (performance.now). */
+const pings = new Map<string, number>();
+/** Each member's last round trip, in ms. */
+const rtt = new Map<string, number>();
+let pingN = 0;
+let pingTimer: ReturnType<typeof setInterval> | null = null;
+function pingViewers() {
+  if (!open.size) { if (pingTimer) clearInterval(pingTimer); pingTimer = null; pings.clear(); return; }
+  for (const id of open.keys()) {
+    const b = list.find((x) => x.id === id && !x.del);
+    const ch = b && chans.get(b.team);
+    for (const m of viewers.get(id) ?? []) {
+      const n = ++pingN;
+      pings.set(`${m}:${n}`, performance.now());
+      void ch?.send({ t: "ping", id, n }, m);
+    }
+  }
+  // An answer that never came is not waited for.
+  if (pings.size > 200) pings.clear();
 }
 /** Tell the team's members online whether this Deck has a shared board on screen. */
 function sayView(id: string, on: boolean) {
@@ -295,6 +334,7 @@ export function attachBoard(id: string, api: any): () => void {
   // What it opened with is what this Deck has: only later changes are news.
   markSeen(api.getSceneElementsIncludingDeleted(), seenOf(id));
   sayView(id, true);
+  pingTimer ??= setInterval(pingViewers, 2000);
   return () => {
     if (open.get(id) !== api) return;
     open.delete(id);
@@ -359,4 +399,6 @@ export function stopTeamBoards() {
   for (const ch of chans.values()) ch.close();
   chans.clear();
   timers.forEach(clearTimeout); timers.clear();
+  if (pingTimer) clearInterval(pingTimer);
+  pingTimer = null;
 }

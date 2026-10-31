@@ -4,7 +4,8 @@
 
 - Boards are shared with a Deck team for good: Share (or "Always share with" on a board's tab), and
   the board shows in every member's Canvas, kept in step whenever members are online together,
-  with each other's cursors while it is open on two Decks. No invite and no host.
+  with each other's cursors while it is open on two Decks, and who else has it open with their
+  round trip in ms. No invite and no host.
 - Share's live invite is gone, with its knock, view-only roles and end-of-sharing choices: sharing
   is with a team only, and a shared board stays shared.
 

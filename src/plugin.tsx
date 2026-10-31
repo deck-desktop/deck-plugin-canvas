@@ -401,9 +401,9 @@ function Board({ storeKey: key, teamBoard, runInTerminal: onRunInTerminal, teams
   runInTerminal: (label: string, command: string) => void;
   /** The Deck teams this one is in, for Share. */
   teams: { id: string; name: string }[];
-  /** A shared board's team, by name, and who else has it open now. */
+  /** A shared board's team, by name, and who else has it open now (with their round trip). */
   team: string;
-  here: string[];
+  here: { name: string; ms?: number }[];
   /** Share this board with a team, for good (it moves out of the project). */
   onShare: (team: string) => void;
 }) {
@@ -647,12 +647,15 @@ function DeckButton({ label, action, arg, scripts, onRun }: {
   );
 }
 
+/** A round trip above this is a slow connection: its number turns amber. */
+const SLOW_MS = 250;
+
 /**
  * The footer's share control. A project board: Share, with the teams to share it with for good. A
  * board shared with a team: whose it is and who else has it open, so it is plain it is live.
  */
 function TeamBar({ teams, team, here, saving, onShare }: {
-  teams: { id: string; name: string }[]; team: string; here: string[]; saving: boolean; onShare: (team: string) => void;
+  teams: { id: string; name: string }[]; team: string; here: { name: string; ms?: number }[]; saving: boolean; onShare: (team: string) => void;
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
@@ -660,7 +663,13 @@ function TeamBar({ teams, team, here, saving, onShare }: {
       <div className="deck-share">
         {team ? (
           <span className="deck-share-text" title="Kept in step with every member of the team">
-            <Users /> Shared with {team}{here.length ? ` · ${here.join(", ")} here` : ""}
+            <Users /> Shared with {team}
+            {here.map((p) => (
+              <span key={p.name} className="flex items-center gap-1" title={p.ms === undefined ? `${p.name} has it open` : `${p.name}: ${p.ms} ms round trip`}>
+                · {p.name}
+                {p.ms !== undefined && <span className={"text-[11px] " + (p.ms > SLOW_MS ? "text-amber-400" : "text-text-muted")}>{p.ms} ms</span>}
+              </span>
+            ))}
           </span>
         ) : (
           <button onClick={(e) => setMenu({ x: e.clientX, y: e.clientY })}
