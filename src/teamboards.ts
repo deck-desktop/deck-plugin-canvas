@@ -279,12 +279,13 @@ function gone(member: string) {
 }
 
 /** The others who have a shared board open now, with their last round trip in ms when known. */
-export function boardViewers(id: string): { name: string; ms?: number }[] {
+export function boardViewers(id: string): Viewer[] {
   const ids = viewers.get(id);
   if (!ids?.size) return [];
   const members = teamsView().flatMap((t) => t.members);
-  return [...ids].map((m) => ({ name: members.find((x) => x.id === m)?.name ?? "someone", ms: rtt.get(m) }));
+  return [...ids].map((m) => ({ id: m, name: members.find((x) => x.id === m)?.name ?? "someone", ms: rtt.get(m) }));
 }
+export interface Viewer { id: string; name: string; ms?: number }
 
 // ---- round trips to those looking at the same board, every 2 s while one is open here ----
 

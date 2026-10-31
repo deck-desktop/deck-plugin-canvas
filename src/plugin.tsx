@@ -22,7 +22,7 @@ import { Excalidraw, Footer, serializeAsJSON } from "@excalidraw/excalidraw";
 import excalidrawCss from "@excalidraw/excalidraw/index.css";
 import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, Copy, Pencil, Trash2, Grid3x3, Magnet, Users } from "lucide-react";
 import { subscribeTeams, teamsView } from "../shim/p2p.js";
-import { attachBoard, boardChanged, boardPointer, boardViewers, deleteTeamBoard, renameTeamBoard, shareAlways, startTeamBoards, stopTeamBoards, subscribeTeamBoards, teamBoardKey, teamBoards, teamBoardsVersion } from "./teamboards";
+import { attachBoard, boardChanged, boardPointer, boardViewers, deleteTeamBoard, renameTeamBoard, shareAlways, startTeamBoards, stopTeamBoards, subscribeTeamBoards, teamBoardKey, teamBoards, teamBoardsVersion, type Viewer } from "./teamboards";
 
 import {
   configRead, configWrite, openExternal, openFile, runScriptNow, type ScriptJob,
@@ -89,6 +89,16 @@ const DECK_THEME = `
 .deck-canvas .deck-share > button:hover { background: var(--button-hover-bg); }
 .deck-canvas .deck-share > button svg, .deck-canvas .deck-share-text svg { width: var(--lg-icon-size); height: var(--lg-icon-size); }
 .deck-canvas .deck-share > .deck-share-text { display: flex; align-items: center; gap: .5rem; padding: 0 .75rem; color: var(--color-gray-50, inherit); white-space: nowrap; }
+/* On a shared board our avatars (Viewers) stand in for Excalidraw's, which cannot show a round trip. */
+.deck-canvas .UserList-Wrapper { display: none; }
+.deck-canvas .deck-viewers { display: flex; gap: 6px; align-items: flex-start; margin-inline-end: 4px; position: relative; }
+.deck-canvas .deck-viewer { display: flex; flex-direction: column; align-items: center; gap: 3px; border: 0; padding: 0; background: none; cursor: pointer; font: inherit; }
+.deck-canvas .deck-viewer-dot { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; }
+.deck-canvas .deck-viewer-ms { font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 999px; background: var(--bg-elev); color: var(--text-muted); white-space: nowrap; }
+.deck-canvas .deck-viewer-ms.slow { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #f59e0b; }
+.deck-canvas .deck-viewer-list { position: absolute; top: 56px; right: 0; z-index: 10; width: 240px; padding: 6px; border-radius: 10px;
+  background: var(--bg-elev); border: 1px solid var(--border-subtle); box-shadow: 0 8px 24px rgb(0 0 0 / 0.35); }
+.deck-canvas .deck-viewer-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; font-size: 12.5px; color: var(--text-primary); }
 /* The same gap Excalidraw leaves between its zoom and undo islands. */
 .deck-canvas .deck-share-row { display: flex; gap: .6em; align-items: center; margin-inline-start: .6em; }
 `;
@@ -403,7 +413,7 @@ function Board({ storeKey: key, teamBoard, runInTerminal: onRunInTerminal, teams
   teams: { id: string; name: string }[];
   /** A shared board's team, by name, and who else has it open now (with their round trip). */
   team: string;
-  here: { name: string; ms?: number }[];
+  here: Viewer[];
   /** Share this board with a team, for good (it moves out of the project). */
   onShare: (team: string) => void;
 }) {
@@ -589,6 +599,7 @@ function Board({ storeKey: key, teamBoard, runInTerminal: onRunInTerminal, teams
         // board, so turning it on once is enough.
         renderTopRightUI={() => (
           <div className="flex gap-1">
+            {teamBoard && here.length > 0 && <Viewers here={here} />}
             <button onClick={() => setGridState({ ...grid, show: !grid.show })}
               title={grid.show ? "Hide the grid" : "Show the grid"} aria-pressed={grid.show} className="deck-grid-toggle">
               <Grid3x3 size={16} />
@@ -609,7 +620,7 @@ function Board({ storeKey: key, teamBoard, runInTerminal: onRunInTerminal, teams
         }}
       >
         <Footer>
-          <TeamBar teams={teams} team={team} here={here} saving={saving} onShare={onShare} />
+          <TeamBar teams={teams} team={team} saving={saving} onShare={onShare} />
         </Footer>
       </Excalidraw>}
 
@@ -649,13 +660,66 @@ function DeckButton({ label, action, arg, scripts, onRun }: {
 
 /** A round trip above this is a slow connection: its number turns amber. */
 const SLOW_MS = 250;
+/** How many of the others are drawn as avatars before the rest fold into "+N". */
+const MAX_AVATARS = 3;
+/** Each person's own colour, the same on every Deck: from their id. */
+const AVATAR_COLORS = [["#f9a8a8", "#3b0d0d"], ["#93c5fd", "#0b2545"], ["#fcd34d", "#3d2a00"], ["#c4b5fd", "#24124d"], ["#86efac", "#0b3d1e"], ["#fda4af", "#4c0519"], ["#7dd3fc", "#082f49"]];
+const avatarColor = (id: string) => AVATAR_COLORS[[...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % AVATAR_COLORS.length];
+const msText = (ms?: number) => (ms === undefined ? "…" : `${ms} ms`);
+
+/**
+ * Who else has a shared board open, top right: an avatar each with the round trip under it, amber
+ * when slow. Past three the rest fold into "+N", its badge the slowest of them; any avatar opens the
+ * full list. Excalidraw's own avatars are hidden for these (see the CSS), as they cannot show it.
+ */
+function Viewers({ here }: { here: Viewer[] }) {
+  const [list, setList] = useState(false);
+  const shown = here.length > MAX_AVATARS + 1 ? here.slice(0, MAX_AVATARS) : here;
+  const rest = here.slice(shown.length);
+  const slowest = rest.reduce<number | undefined>((m, v) => (v.ms === undefined ? m : Math.max(m ?? 0, v.ms)), undefined);
+  const badge = (ms?: number) => <span className={"deck-viewer-ms" + (ms !== undefined && ms > SLOW_MS ? " slow" : "")}>{msText(ms)}</span>;
+  return (
+    <div className="deck-viewers">
+      {shown.map((v) => {
+        const [bg, fg] = avatarColor(v.id);
+        return (
+          <button key={v.id} className="deck-viewer" title={v.name} aria-label={`${v.name}, ${msText(v.ms)}`} onClick={() => setList((x) => !x)}>
+            <span className="deck-viewer-dot" style={{ background: bg, color: fg }}>{(v.name.trim()[0] ?? "?").toUpperCase()}</span>
+            {badge(v.ms)}
+          </button>
+        );
+      })}
+      {rest.length > 0 && (
+        <button className="deck-viewer" title={rest.map((v) => v.name).join(", ")} aria-label={`${rest.length} more`} onClick={() => setList((x) => !x)}>
+          <span className="deck-viewer-dot" style={{ background: "var(--bg-hover)", color: "var(--text-primary)", fontSize: 11 }}>+{rest.length}</span>
+          {badge(slowest)}
+        </button>
+      )}
+      {list && (
+        <div className="deck-viewer-list" onMouseLeave={() => setList(false)}>
+          <div className="deck-viewer-row" style={{ color: "var(--text-muted)", fontSize: 11 }}>On this board</div>
+          {here.map((v) => {
+            const [bg, fg] = avatarColor(v.id);
+            return (
+              <div key={v.id} className="deck-viewer-row">
+                <span className="deck-viewer-dot" style={{ width: 22, height: 22, fontSize: 10, background: bg, color: fg }}>{(v.name.trim()[0] ?? "?").toUpperCase()}</span>
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</span>
+                {badge(v.ms)}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * The footer's share control. A project board: Share, with the teams to share it with for good. A
  * board shared with a team: whose it is and who else has it open, so it is plain it is live.
  */
-function TeamBar({ teams, team, here, saving, onShare }: {
-  teams: { id: string; name: string }[]; team: string; here: { name: string; ms?: number }[]; saving: boolean; onShare: (team: string) => void;
+function TeamBar({ teams, team, saving, onShare }: {
+  teams: { id: string; name: string }[]; team: string; saving: boolean; onShare: (team: string) => void;
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
@@ -664,12 +728,6 @@ function TeamBar({ teams, team, here, saving, onShare }: {
         {team ? (
           <span className="deck-share-text" title="Kept in step with every member of the team">
             <Users /> Shared with {team}
-            {here.map((p) => (
-              <span key={p.name} className="flex items-center gap-1" title={p.ms === undefined ? `${p.name} has it open` : `${p.name}: ${p.ms} ms round trip`}>
-                · {p.name}
-                {p.ms !== undefined && <span className={"text-[11px] " + (p.ms > SLOW_MS ? "text-amber-400" : "text-text-muted")}>{p.ms} ms</span>}
-              </span>
-            ))}
           </span>
         ) : (
           <button onClick={(e) => setMenu({ x: e.clientX, y: e.clientY })}
