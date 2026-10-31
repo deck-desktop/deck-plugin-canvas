@@ -22,17 +22,18 @@ do not sync.
 
 ## Drawing together
 
-**Share** (bottom of a board) lets other people draw on it with you, live, from their own Deck.
-There is no server of yours involved: the Decks connect directly, and find each other through
-public Nostr relays that only ever see an encrypted handshake.
+**Share** (bottom of a board) lets the people in your Deck team draw on it with you, live, from
+their own Deck. Start or join a team in Deck's Settings > Teams first. There is no server of yours
+involved: the Decks connect directly, and find each other through public Nostr relays that only
+ever see an encrypted handshake.
 
-- **Sharing** starts at once, with everyone able to edit; send them the code shown in the bar.
-- **Joining** asks for the code, then waits for the host to let you in.
+- **Share** › everyone in a team, or one person in it. Sharing starts at once, with everyone able
+  to edit.
+- They get a notification, *name* invites you to *board*, with **Join**: one click opens the board,
+  with no code to type and no waiting to be let in. Someone offline gets it when they come online
+  while the board is still shared.
 - The others see your name from Deck's Settings > General (empty uses your Google account's name,
   else your Windows account's).
-- The host sees "*name* wants to join" in the bar, with **Let in** and ✕, or as a notification
-  with **Let in** and **Deny** while the board is off screen. Nobody is sent the board until let in, so a code that
-  ends up in the wrong place lets no one in by itself.
 - While shared you see each other's cursors, names, laser pointer and pictures (up to 4 MB each),
   and the bar shows each connection's round trip in ms.
 - Click the bar's status to let everyone edit or not, set one person to edit or view only, or

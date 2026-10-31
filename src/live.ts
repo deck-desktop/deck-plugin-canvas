@@ -15,7 +15,8 @@
 import { serializeAsJSON, reconcileElements, CaptureUpdateAction, getSceneVersion } from "@excalidraw/excalidraw";
 import { configWrite } from "../shim/bridge.js";
 import { notify, dismissNotification } from "../shim/ui.js";
-import { share as startShare, type Json, type Mode, type P2pShare, type ShareView } from "../shim/p2p.js";
+import { type Json, type Mode, type P2pShare, type ShareView } from "../shim/p2p.js";
+import { hostShare, joinShare } from "./teaminvite";
 import { joinStroke, markSeen, strokeTail, takeChanged, takeNewFiles, SHARE_VERSION, type Seen } from "./sync";
 
 /** A share: the room's code, which side this Deck is, its name. */
@@ -25,6 +26,11 @@ export interface Share {
   attempt?: number;
   /** The host's choice when sharing: whether the others may draw. Changeable while shared. */
   mode?: Mode;
+  /** The Deck team it is shared with (a board is shared with a team or not at all). Deck invites
+   *  them, and lets in whoever joins with the invite, without a knock. */
+  team?: string;
+  /** Invited one member of the team rather than all of it. */
+  to?: string;
 }
 
 /** What travels between Decks on a shared board, beside Deck's own share messages. */
@@ -106,15 +112,18 @@ export class LiveShare {
     // the same for its pictures, which go to them in their welcome.
     markSeen(scene.elements, this.seen);
     this.filesDone = new Set(Object.keys(scene.files));
-    this.s = startShare<BoardMsg>(
-      // "board" was Canvas's one channel before sharing moved into Deck; kept as the name of its own.
-      { app: "canvas-share", channel: "board", code: share.code, host: share.host, name: share.name, version: SHARE_VERSION, mode: share.mode },
-      {
-        message: (msg, peer) => this.onMessage(msg, peer),
-        welcome: (peer) => this.welcome(peer),
-        left: (peer) => { this.cursors.delete(peer); this.showCursors(); },
-      },
-    );
+    const on = {
+      message: (msg: BoardMsg, peer: string) => this.onMessage(msg, peer),
+      welcome: (peer: string) => this.welcome(peer),
+      left: (peer: string) => { this.cursors.delete(peer); this.showCursors(); },
+    };
+    // With a team only: Deck invites them (or the one member) and lets in whoever joins. A share
+    // with no team (one remembered from before) is over at once.
+    // "board" was Canvas's one channel before sharing moved into Deck; kept as the name of its own.
+    const team = share.team ?? "";
+    this.s = share.host
+      ? hostShare<BoardMsg>(team, { id: share.code, name: share.name, version: SHARE_VERSION, channel: "board", mode: share.mode, meta: { board: boardName } }, on, share.to)
+      : joinShare<BoardMsg>(team, share.code, { name: share.name, version: SHARE_VERSION, channel: "board" }, on);
     // Ended for this Deck (the host stopped, left or removed it): stop the board's side too. The
     // board stays on screen until the guest chooses what to keep.
     this.s.subscribe(() => {

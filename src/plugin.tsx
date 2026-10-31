@@ -20,8 +20,9 @@ import { useEffect, useRef, useState, useSyncExternalStore, type PointerEvent } 
 import { TabStrip, ConfirmDialog, NamePrompt, ContextMenu, type ConfirmState, type NamePromptState, type MenuEntry } from "../shim/ui.js";
 import { Excalidraw, Footer, serializeAsJSON } from "@excalidraw/excalidraw";
 import excalidrawCss from "@excalidraw/excalidraw/index.css";
-import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Check, Pencil, Trash2, UserX, UserPlus, Grid3x3, Magnet } from "lucide-react";
-import { cleanCode, newCode, type Mode, type Person, type Roles } from "../shim/p2p.js";
+import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Pencil, Trash2, UserX, UserPlus, Grid3x3, Magnet, Users } from "lucide-react";
+import { newShareId, subscribeTeams, teamsView, type Mode, type Person, type Roles } from "../shim/p2p.js";
+import { startTeamInvites, stopTeamInvites, takeJoin } from "./teaminvite";
 import { LiveShare, type LiveView, type Share } from "./live";
 
 import {
@@ -99,7 +100,11 @@ const style = document.createElement("style");
 style.dataset.plugin = "canvas";
 style.textContent = excalidrawCss + DECK_THEME;
 document.head.appendChild(style);
+// Team invites reach this Deck with the Canvas tab closed too.
+startTeamInvites();
+
 export function dispose() {
+  stopTeamInvites();
   style.remove();
   // A reload re-imports the plugin: the old copy's shares end here rather than run on unseen.
   for (const l of lives.values()) void l.close();
@@ -129,7 +134,7 @@ const lastBoard = new Map<string, string>();
 
 /**
  * The share each project was last in. A host who opens another of its boards ends that share, and
- * coming back offers Resume sharing in one click instead of typing the code again.
+ * coming back offers Resume sharing in one click, the team invited again.
  * (Leaving the Canvas tab does not end a share at all: see `lives`.) Memory only, never written
  * to disk, gone when Deck restarts; cleared when a share is ended on purpose (Stop, Leave, Close).
  */
@@ -215,12 +220,20 @@ export function PaneView({ cwd, runInTerminal }: {
     if (!offer) return;
     if (offer.host && offer.board !== active) { lastBoard.set(project, offer.board); setActive(offer.board); }
     const { board: _b, ...again } = offer;
+    // Hosting again invites them again (Deck does, as the share starts).
     setShare({ ...again, attempt: (again.attempt ?? 0) + 1 });
   };
-  // Joining asks only for the code. No password: the host lets each person in (see p2p in Deck),
-  // which is less to pass on and safer if the code leaks. No name either: Deck's own (Settings >
-  // General, else the Google or Windows account's) is what the others see.
-  const [codePrompt, setCodePrompt] = useState<NamePromptState | null>(null);
+  const teams = useSyncExternalStore(subscribeTeams, teamsView);
+  // A teammate's invite, joined from its notification: taken now if Canvas is open, else on mount.
+  useEffect(() => {
+    const take = () => {
+      const inv = takeJoin();
+      if (inv) void userName().then((name) => setShare({ code: inv.id, host: false, name, team: inv.team }));
+    };
+    take();
+    window.addEventListener("canvas-team-join", take);
+    return () => window.removeEventListener("canvas-team-join", take);
+  }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   // Bumped to remount the board after its files were replaced on disk (a restore from a backup).
   const [reload, setReload] = useState(0);
@@ -363,16 +376,10 @@ export function PaneView({ cwd, runInTerminal }: {
         boardName={boards.find((b) => b.id === active)?.name ?? "Board"}
         onReload={() => setReload((n) => n + 1)}
         onSaveCopy={(name, scene, files) => addCopy(name, scene, files, active).then(() => {})}
+        teams={teams.map((t) => ({ id: t.id, name: t.name, members: t.members.filter((m) => !m.me).map((m) => ({ id: m.id, name: m.name, online: m.online })) }))}
+        // A team, or one of its members: Deck invites them, and lets in whoever joins.
         // No questions: the others may draw until the host says otherwise from the bar's menu.
-        onHost={() => void userName().then((name) => setShare({ code: newCode(), host: true, name, mode: "edit" }))}
-        onJoin={() => setCodePrompt({
-          title: "Join a shared board", subtitle: "The code from whoever is sharing, like abcd-efgh-jkmn-pqrs",
-          initial: "", confirmLabel: "Next",
-          onSave: (text) => {
-            const code = cleanCode(text);
-            if (code) void userName().then((name) => setShare({ code, host: false, name }));
-          },
-        })}
+        onTeam={(team, to) => void userName().then((name) => setShare({ code: newShareId(), host: true, name, mode: "edit", team, to }))}
         onStop={endShare}
         offer={!share && offer ? offer : null}
         project={project}
@@ -380,7 +387,6 @@ export function PaneView({ cwd, runInTerminal }: {
         onDismissOffer={() => { remembered.delete(project); setOffer(null); setReload((n) => n + 1); }}
         onRejoin={() => setShare((x) => x && { ...x, attempt: (x.attempt ?? 0) + 1 })} />
       <ConfirmDialog state={confirm} onClose={() => setConfirm(null)} />
-      <NamePrompt state={codePrompt} onClose={() => setCodePrompt(null)} />
       <NamePrompt state={renaming} onClose={() => setRenaming(null)} />
     </div>
   );
@@ -424,7 +430,7 @@ function isLight(hex: string): boolean {
   return 0.2126 * lin(m[1]) + 0.7152 * lin(m[2]) + 0.0722 * lin(m[3]) > 0.4;
 }
 
-function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName, onReload, onSaveCopy, onHost, onJoin, onStop, onRejoin, offer, onResume, onDismissOffer, project }: {
+function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName, onReload, onSaveCopy, teams, onTeam, onStop, onRejoin, offer, onResume, onDismissOffer, project }: {
   storeKey: string;
   /** The project, which the live share is kept under. */
   project: string;
@@ -435,8 +441,9 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   onReload: () => void;
   /** Add a board beside this one holding the given scene and pictures. */
   onSaveCopy: (name: string, scene: string, files: string) => Promise<void>;
-  onHost: () => void;
-  onJoin: () => void;
+  /** The Deck teams this one is in, and sharing the board with one of them, or one of its members. */
+  teams: TeamPick[];
+  onTeam: (team: string, to?: string) => void;
   onStop: () => void;
   /** Connect again to the same board (a guest whose connection dropped or never came up). */
   onRejoin: () => void;
@@ -770,7 +777,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
             onKick={(id) => liveRef.current?.kick(id)} note={note} stuck={stuck} onRejoin={onRejoin}
             roles={view.roles} canEdit={view.canEdit}
             onDefault={(m) => liveRef.current?.setDefault(m)} onPerson={(id, m) => liveRef.current?.setPerson(id, m)}
-            onHost={onHost} onJoin={onJoin} onStop={share?.host ? () => setEnding("stop") : onStop}
+            teams={teams} onTeam={onTeam} onStop={share?.host ? () => setEnding("stop") : onStop}
             offer={offer} onResume={onResume} onDismissOffer={onDismissOffer} />
         </Footer>
       </Excalidraw>}
@@ -823,7 +830,10 @@ const DIALOG_BODY = "mb-3 text-[12px] leading-relaxed text-text-muted";
 const SLOW_MS = 250;
 
 /** Share, Join, or while shared: the code, who is here, and Stop. */
-function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, stuck, onRejoin, offer, onResume, onDismissOffer, roles, canEdit, onDefault, onPerson, knocking, waiting, hostName, onAllow, onDeny }: {
+/** A team, and the members other than this Deck, as the Invite menu lists them. */
+interface TeamPick { id: string; name: string; members: { id: string; name: string; online: boolean }[] }
+
+function ShareBar({ share, peers, saving, teams, onTeam, onStop, onKick, note, stuck, onRejoin, offer, onResume, onDismissOffer, roles, canEdit, onDefault, onPerson, knocking, waiting, hostName, onAllow, onDeny }: {
   /** The host: who is asking to be let in. */
   knocking: Person[];
   onAllow: (id: string) => void;
@@ -850,12 +860,12 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
   /** Remove someone: offered to the host from the list of who is connected. */
   onKick: (id: string) => void;
   saving: boolean;
-  onHost: () => void;
-  onJoin: () => void;
+  teams: TeamPick[];
+  onTeam: (team: string, to?: string) => void;
   onStop: () => void;
   onRejoin: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [teamMenu, setTeamMenu] = useState<{ x: number; y: number } | null>(null);
   const [people, setPeople] = useState<{ x: number; y: number } | null>(null);
   const status = <>
     <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: !peers.length || peers.some((p) => (p.ms ?? 0) > SLOW_MS) ? "rgb(var(--tone-amber-400))" : "rgb(var(--tone-green-400))" }} />
@@ -868,14 +878,17 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
       {!share && offer ? (
         <div className="deck-share">
           <button onClick={onResume} title={offer.host ? "Share this board again, same code" : "Join that board again, same code"}>
-            {offer.host ? <Share2 /> : <LogIn />} {offer.host ? "Resume sharing" : "Rejoin"} <span className="font-mono">{offer.code}</span>
+            {offer.host ? <Share2 /> : <LogIn />} {offer.host ? "Resume sharing" : "Rejoin"}
           </button>
           <button onClick={onDismissOffer} title="Forget it">✕</button>
         </div>
       ) : !share ? (
         <div className="deck-share">
-          <button onClick={onHost} title="Let someone else draw on this board with you"><Share2 /> Share</button>
-          <button onClick={onJoin} title="Open a board someone shared with you"><LogIn /> Join</button>
+          {/* One button: your team and the people in it first, a code for anyone else after. */}
+          <button title="Draw on this board with your Deck team, or one person in it" onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setTeamMenu({ x: r.left, y: r.top - 8 });
+          }}><Share2 /> Share</button>
         </div>
       ) : (
         <div className="deck-share">
@@ -886,12 +899,6 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
               setPeople({ x: r.left, y: r.top - 8 });
             }}>{status}</button>
           ) : <span className="deck-share-text">{status}</span>}
-          {share.host && (
-            <button className="font-mono" title="Copy the code"
-              onClick={() => { void navigator.clipboard.writeText(share.code).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }, () => {}); }}>
-              {share.code} {copied ? <Check /> : <Copy />}
-            </button>
-          )}
           {stuck && !share.host && <button onClick={onRejoin} title="Try connecting again">Rejoin</button>}
           <button onClick={onStop}>{share.host ? "Stop" : "Leave"}</button>
         </div>
@@ -906,6 +913,19 @@ function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, 
       ))}
       {note && <span className="text-[11px] text-text-muted">{note}</span>}
       {saving && <span className="text-[11px] text-text-muted">Saving…</span>}
+      {teamMenu && (
+        <ContextMenu x={teamMenu.x} y={teamMenu.y} up onClose={() => setTeamMenu(null)} items={(() => {
+          // One team: everyone, then each member. Several: a submenu each.
+          const rows = (t: TeamPick): MenuEntry[] => [
+            { label: `Everyone in ${t.name}`, icon: Users, onClick: () => onTeam(t.id) },
+            ...t.members.map((m) => ({ label: m.name, hint: m.online ? "●" : undefined, subLabel: m.online ? undefined : "not online: invited when they are", onClick: () => onTeam(t.id, m.id) })),
+          ];
+          const team: MenuEntry[] = teams.length === 1 ? rows(teams[0]) : teams.map((t) => ({ label: t.name, icon: Users, children: rows(t) }));
+          // Not in a team yet: where to start one.
+          return team.length ? team : [{ label: "Start or join a team…", subLabel: "Settings › Teams", icon: Users,
+            onClick: () => window.dispatchEvent(new CustomEvent("deck-navigate", { detail: "settings:teams" })) }];
+        })()} />
+      )}
       {people && (
         <ContextMenu x={people.x} y={people.y} up onClose={() => setPeople(null)}
           items={[
