@@ -22,7 +22,7 @@ import { Excalidraw, Footer, serializeAsJSON } from "@excalidraw/excalidraw";
 import excalidrawCss from "@excalidraw/excalidraw/index.css";
 import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, Copy, Pencil, Trash2, Grid3x3, Magnet, Users } from "lucide-react";
 import { subscribeTeams, teamsView } from "../shim/p2p.js";
-import { attachBoard, boardChanged, boardPointer, boardViewers, deleteTeamBoard, renameTeamBoard, shareAlways, startTeamBoards, stopTeamBoards, subscribeTeamBoards, teamBoardKey, teamBoards, teamBoardsVersion, type Viewer } from "./teamboards";
+import { attachBoard, boardChanged, boardPointer, boardViewers, canManage, deleteTeamBoard, renameTeamBoard, shareAlways, startTeamBoards, stopTeamBoards, subscribeTeamBoards, teamBoardKey, teamBoards, teamBoardsVersion, type Viewer } from "./teamboards";
 
 import {
   configRead, configWrite, openExternal, openFile, runScriptNow, type ScriptJob,
@@ -217,6 +217,11 @@ export function PaneView({ cwd, runInTerminal }: {
 
   const remove = (id: string) => {
     const t = teamOf(id), tb = t && shared.find((x) => x.id === t);
+    if (tb && !canManage(tb.id)) {
+      setConfirm({ title: "Only whoever shared it can delete it", acknowledge: true, onConfirm: () => {},
+        body: `"${tb.name}" can be deleted, or stop being shared, by the member who shared it or the team's owner. Duplicate keeps a copy in your own boards.` });
+      return;
+    }
     if (tb) {
       setConfirm({ title: `Delete "${tb.name}" for the team?`, body: "It goes from every member's Deck, as they come online.", confirmLabel: "Delete",
         onConfirm: () => { void deleteTeamBoard(tb.id); if (id === active) open(boards[0]?.id ?? ""); } });
@@ -328,7 +333,7 @@ export function PaneView({ cwd, runInTerminal }: {
       }}>
       <TabStrip chip
         tabs={[...boards.map((b) => ({ id: b.id, title: b.name, closeTitle: "Delete board" })),
-          ...shared.map((b) => ({ id: `team:${b.id}`, title: b.name, icon: <Users size={12} />, closeTitle: "Delete for the team" }))]}
+          ...shared.map((b) => ({ id: `team:${b.id}`, title: b.name, icon: <Users size={12} />, closeTitle: canManage(b.id) ? "Delete for the team" : "Only whoever shared it can delete it" }))]}
         activeId={active}
         onSelect={open}
         onClose={remove}
@@ -347,10 +352,9 @@ export function PaneView({ cwd, runInTerminal }: {
           { label: "Rename", icon: Pencil, onClick: () => rename(tabMenu.id) },
           { label: "Duplicate", icon: Copy, onClick: () => void duplicate(tabMenu.id) },
           ...(teamOf(tabMenu.id)
-            ? [{ label: "Stop sharing with the team", icon: Users, onClick: () => stopSharing(tabMenu.id) }]
+            ? (canManage(teamOf(tabMenu.id)!) ? [{ label: "Stop sharing with the team", icon: Users, onClick: () => stopSharing(tabMenu.id) }] : [])
             : teams.map((t) => ({ label: `Always share with ${t.name}`, icon: Users, onClick: () => void shareWith(tabMenu.id, t.id) }))),
-          "sep",
-          { label: "Delete", icon: Trash2, danger: true, onClick: () => remove(tabMenu.id) },
+          ...(!teamOf(tabMenu.id) || canManage(teamOf(tabMenu.id)!) ? ["sep" as const, { label: "Delete", icon: Trash2, danger: true, onClick: () => remove(tabMenu.id) }] : []),
         ]} />
       )}
       {/* Keyed by board: Excalidraw reads initialData only when it mounts. */}

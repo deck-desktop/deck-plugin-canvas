@@ -17,7 +17,9 @@ import { myTeamId, subscribeTeams, teamChannel, teamsView, type Member, type Tea
 import { forPeers, fromPeer, markSeen, takeChanged, takeNewFiles, type Seen } from "./sync";
 
 export interface Rev { t: number; by: string }
-export interface TeamBoard { id: string; name: string; team: string; rev: Rev; del?: boolean }
+/** `owner`: the member who shared it. Only they and the team's owner may delete it, or stop
+ *  sharing it; everyone may draw on it and rename it. */
+export interface TeamBoard { id: string; name: string; team: string; rev: Rev; del?: boolean; owner?: string }
 
 type Msg =
   | { t: "list"; boards: TeamBoard[] }
@@ -49,12 +51,21 @@ export function cleanBoard(v: unknown, now: number): TeamBoard | null {
   const b = v as TeamBoard | null;
   if (!b || !validId(b.id) || typeof b.name !== "string" || b.name.length > 200 || typeof b.team !== "string" || b.team.length > 64
     || !b.rev || typeof b.rev.t !== "number" || !Number.isFinite(b.rev.t) || b.rev.t > now + FUTURE
-    || typeof b.rev.by !== "string" || b.rev.by.length > 64 || (b.del !== undefined && typeof b.del !== "boolean")) return null;
-  return { id: b.id, name: b.name, team: b.team, rev: { t: b.rev.t, by: b.rev.by }, ...(b.del ? { del: true } : {}) };
+    || typeof b.rev.by !== "string" || b.rev.by.length > 64 || (b.del !== undefined && typeof b.del !== "boolean")
+    || (b.owner !== undefined && (typeof b.owner !== "string" || b.owner.length > 64))) return null;
+  return { id: b.id, name: b.name, team: b.team, rev: { t: b.rev.t, by: b.rev.by }, ...(b.del ? { del: true } : {}), ...(b.owner ? { owner: b.owner } : {}) };
 }
 
-/** `mine` with what `theirs` has newer, for team `team` only. */
-export function mergeList(mine: TeamBoard[], theirs: unknown, team: string, now: number): { list: TeamBoard[]; changed: string[] } {
+/** Whether member `who` may delete board `b`, or stop sharing it: who shared it, or the team's owner. */
+export const mayManage = (b: Pick<TeamBoard, "owner">, who: string, teamOwner: string | undefined) =>
+  !!who && (who === b.owner || who === teamOwner);
+
+/**
+ * `mine` with what `theirs` has newer, for team `team` only. A board keeps the owner it was shared
+ * with; a delete counts only from that owner or the team's owner (`teamOwner`), and a deleted board
+ * stays deleted.
+ */
+export function mergeList(mine: TeamBoard[], theirs: unknown, team: string, now: number, teamOwner?: string): { list: TeamBoard[]; changed: string[] } {
   if (!Array.isArray(theirs)) return { list: mine, changed: [] };
   const byId = new Map(mine.map((b) => [b.id, b]));
   const changed: string[] = [];
@@ -65,6 +76,11 @@ export function mergeList(mine: TeamBoard[], theirs: unknown, team: string, now:
     // A board this Deck has for another team stays that team's.
     if (have && have.team !== team) continue;
     if (!newer(b.rev, have?.rev)) continue;
+    if (have?.del) continue;
+    if (have) {
+      if (b.del && !mayManage(have, b.rev.by, teamOwner)) continue;
+      b.owner = have.owner;
+    }
     byId.set(b.id, b);
     changed.push(b.id);
   }
@@ -160,7 +176,7 @@ async function onMsg(team: string, msg: Msg, from: Member) {
   if (stopped || !msg || typeof msg !== "object") return;
   const ch = chans.get(team);
   if (msg.t === "list") {
-    const r = mergeList(list, msg.boards, team, Date.now());
+    const r = mergeList(list, msg.boards, team, Date.now(), teamsView().find((t) => t.id === team)?.ownerId);
     if (!r.changed.length) return;
     list = r.list;
     await saveList();
@@ -361,7 +377,8 @@ export async function shareAlways(name: string, team: string, scene: string, fil
   const id = Math.random().toString(36).slice(2, 10);
   await configWrite(teamBoardKey(id), scene || JSON.stringify({ type: "excalidraw", version: 2, source: "deck", elements: [], appState: {} }));
   if (files.trim()) await configWrite(filesKey(teamBoardKey(id)), files);
-  const b: TeamBoard = { id, name: name.slice(0, 200), team, rev: { t: Date.now(), by: await myId() } };
+  const by = await myId();
+  const b: TeamBoard = { id, name: name.slice(0, 200), team, rev: { t: Date.now(), by }, owner: by };
   await put(b);
   const ch = chans.get(team);
   if (ch?.online().length) await ch.send({ t: "els", id, elements: forPeers((await readJson(teamBoardKey(id)))?.elements ?? []) });
@@ -373,10 +390,18 @@ export async function renameTeamBoard(id: string, name: string) {
   if (b) await put({ ...b, name: name.slice(0, 200), rev: { t: Math.max(Date.now(), b.rev.t + 1), by: await myId() } });
 }
 
-/** Delete a shared board for everyone in its team. */
+/** Whether this Deck may delete a shared board or stop sharing it (mayManage). */
+export const canManage = (id: string) => {
+  const b = list.find((x) => x.id === id);
+  return !!b && mayManage(b, me, teamsView().find((t) => t.id === b.team)?.ownerId);
+};
+
+/** Delete a shared board for everyone in its team: only its owner or the team's owner. */
 export async function deleteTeamBoard(id: string) {
   const b = list.find((x) => x.id === id);
   if (!b) return;
+  await myId();
+  if (!canManage(id)) return;
   await put({ ...b, del: true, rev: { t: Math.max(Date.now(), b.rev.t + 1), by: await myId() } });
   for (const k of [teamBoardKey(id), filesKey(teamBoardKey(id))]) void configWrite(k, "").catch(() => {});
 }
@@ -393,6 +418,8 @@ export async function startTeamBoards() {
   try { list = t.trim() ? JSON.parse(t) : []; } catch { list = []; }
   unTeams = subscribeTeams(channels);
   channels();
+  // Who this Deck is, for canManage: only once it is in a team (asking makes an identity).
+  if (teamsView().length) void myId().then(emit).catch(() => {});
 }
 export function stopTeamBoards() {
   stopped = true;

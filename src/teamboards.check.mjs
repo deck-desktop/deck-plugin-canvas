@@ -28,7 +28,7 @@ const T = await import(`file://${out}`);
 rmSync(dir, { recursive: true, force: true });
 
 const now = 1_000_000;
-const b = (id, t, extra = {}) => ({ id, name: `Board ${id}`, team: "t1", rev: { t, by: "x" }, ...extra });
+const b = (id, t, extra = {}) => ({ id, name: `Board ${id}`, team: "t1", rev: { t, by: "x" }, owner: "x", ...extra });
 
 // A board another Deck has is taken; a newer rename wins, an older one does not.
 let r = T.mergeList([], [b("b1", 10)], "t1", now);
@@ -40,6 +40,14 @@ assert.deepEqual(T.mergeList(r.list, [b("b1", 15, { name: "Old" })], "t1", now).
 r = T.mergeList(r.list, [b("b1", 30, { del: true })], "t1", now);
 assert.equal(r.list[0].del, true);
 assert.deepEqual(T.mergeList(r.list, [b("b1", 25)], "t1", now).changed, [], "a deleted board came back");
+// A delete counts only from whoever shared the board or the team's owner; the owner never changes.
+let o = T.mergeList([], [b("o1", 10)], "t1", now, "boss").list;
+assert.deepEqual(T.mergeList(o, [b("o1", 20, { del: true, rev: { t: 20, by: "member" } })], "t1", now, "boss").changed, [], "a member deleted someone else's board");
+assert.deepEqual(T.mergeList(o, [b("o1", 20, { del: true, rev: { t: 20, by: "boss" } })], "t1", now, "boss").changed, ["o1"], "the team's owner may delete it");
+const renamed = T.mergeList(o, [b("o1", 20, { name: "Plan", owner: "member", rev: { t: 20, by: "member" } })], "t1", now, "boss").list[0];
+assert.equal(renamed.name, "Plan", "anyone may rename it");
+assert.equal(renamed.owner, "x", "a rename cannot take the board over");
+assert.ok(T.mayManage({ owner: "x" }, "x", "boss") && T.mayManage({ owner: "x" }, "boss", "boss") && !T.mayManage({ owner: "x" }, "member", "boss"));
 // Only the team the message came from: a board said to be another team's is not taken from it.
 assert.deepEqual(T.mergeList([], [b("b2", 10, { team: "other" })], "t1", now).changed, []);
 // What is refused: an id that is a path, a revision from far in the future, the wrong shape.
