@@ -24,7 +24,10 @@ type Msg =
   | { t: "list"; boards: TeamBoard[] }
   | { t: "els"; id: string; elements: unknown[] }
   | { t: "need"; id: string; ids: string[] }
-  | { t: "files"; id: string; files: unknown[] };
+  | { t: "files"; id: string; files: unknown[] }
+  /** This Deck has the board on screen, or no longer: pointers go only to those who do. */
+  | { t: "view"; id: string; on: boolean }
+  | { t: "ptr"; id: string; x: number; y: number; button: "up" | "down"; tool: "pointer" | "laser" };
 
 const LIST = "team-boards";
 export const teamBoardKey = (id: string) => `teamboard_${id}`;
@@ -133,6 +136,7 @@ function channels() {
     if (chans.has(team)) continue;
     chans.set(team, teamChannel<any>(team, "boards", {
       joined: (m) => void hello(team, m),
+      left: (m) => gone(m.id),
       message: (msg: Msg, from) => void onMsg(team, msg, from),
     }));
   }
@@ -143,6 +147,7 @@ function channels() {
 async function hello(team: string, m: Member) {
   const ch = chans.get(team);
   if (!ch) return;
+  for (const id of open.keys()) if (list.some((b) => b.id === id && b.team === team && !b.del)) void ch.send({ t: "view", id, on: true }, m.id);
   const mine = list.filter((b) => b.team === team);
   if (!mine.length) return;
   await ch.send({ t: "list", boards: mine }, m.id);
@@ -168,6 +173,19 @@ async function onMsg(team: string, msg: Msg, from: Member) {
   if (!validId((msg as { id?: unknown }).id)) return;
   const board = list.find((b) => b.id === (msg as { id: string }).id && b.team === team && !b.del);
   if (!board) return;
+  if (msg.t === "view") {
+    const v = viewers.get(board.id) ?? viewers.set(board.id, new Set()).get(board.id)!;
+    if (msg.on === true) v.add(from.id); else { v.delete(from.id); dropCursor(board.id, from.id); }
+    return;
+  }
+  if (msg.t === "ptr") {
+    const api = open.get(board.id);
+    if (!api || typeof msg.x !== "number" || typeof msg.y !== "number" || !Number.isFinite(msg.x) || !Number.isFinite(msg.y)) return;
+    const c = cursors.get(board.id) ?? cursors.set(board.id, new Map()).get(board.id)!;
+    c.set(from.id, { pointer: { x: msg.x, y: msg.y, tool: msg.tool === "laser" ? "laser" : "pointer" }, button: msg.button === "down" ? "down" : "up", username: from.name, id: from.id });
+    api.updateScene({ collaborators: new Map(c) });
+    return;
+  }
   if (msg.t === "els") {
     const remote = cleanElements(msg.elements);
     if (!remote?.length) return;
@@ -226,11 +244,54 @@ export function boardChanged(id: string) {
 }
 
 /** A shared board on screen: arrivals go into it. The returned function takes it off. */
+// ---- who is looking at a shared board, and where their pointer is ----
+
+/** Per board: the members who have it on screen now. */
+const viewers = new Map<string, Set<string>>();
+/** Per board on screen here: the others' pointers, as Excalidraw draws collaborators. */
+const cursors = new Map<string, Map<string, any>>();
+
+function dropCursor(id: string, member: string) {
+  const c = cursors.get(id);
+  if (!c?.delete(member)) return;
+  open.get(id)?.updateScene({ collaborators: new Map(c) });
+}
+/** A member went offline: they look at nothing, and their pointers go. */
+function gone(member: string) {
+  for (const [id, v] of viewers) { v.delete(member); dropCursor(id, member); }
+}
+/** Tell the team's members online whether this Deck has a shared board on screen. */
+function sayView(id: string, on: boolean) {
+  const b = list.find((x) => x.id === id && !x.del);
+  if (b) void chans.get(b.team)?.send({ t: "view", id, on });
+}
+
+const lastPtr = new Map<string, { at: number; button: string }>();
+/** This Deck's pointer on a shared board, to those who have it open: at most every 33 ms, and a
+ *  press or release always, as a live share does. */
+export function boardPointer(id: string, p: { pointer: { x: number; y: number; tool: "pointer" | "laser" }; button: "up" | "down" }) {
+  const b = list.find((x) => x.id === id && !x.del);
+  const ch = b && chans.get(b.team);
+  const to = viewers.get(id);
+  if (!ch || !to?.size) return;
+  const last = lastPtr.get(id);
+  if (last && last.button === p.button && Date.now() - last.at < 33) return;
+  lastPtr.set(id, { at: Date.now(), button: p.button });
+  const msg = { t: "ptr", id, x: p.pointer.x, y: p.pointer.y, button: p.button, tool: p.pointer.tool };
+  for (const m of to) void ch.send(msg, m);
+}
+
 export function attachBoard(id: string, api: any): () => void {
   open.set(id, api);
   // What it opened with is what this Deck has: only later changes are news.
   markSeen(api.getSceneElementsIncludingDeleted(), seenOf(id));
-  return () => { if (open.get(id) === api) open.delete(id); };
+  sayView(id, true);
+  return () => {
+    if (open.get(id) !== api) return;
+    open.delete(id);
+    cursors.delete(id);
+    sayView(id, false);
+  };
 }
 
 async function myId() {

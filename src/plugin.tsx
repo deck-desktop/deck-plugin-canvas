@@ -23,7 +23,7 @@ import excalidrawCss from "@excalidraw/excalidraw/index.css";
 import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Pencil, Trash2, UserX, UserPlus, Grid3x3, Magnet, Users } from "lucide-react";
 import { newShareId, subscribeTeams, teamsView, type Mode, type Person, type Roles } from "../shim/p2p.js";
 import { startTeamInvites, stopTeamInvites, takeJoin } from "./teaminvite";
-import { attachBoard, boardChanged, deleteTeamBoard, renameTeamBoard, shareAlways, startTeamBoards, stopTeamBoards, subscribeTeamBoards, teamBoardKey, teamBoards, teamBoardsVersion } from "./teamboards";
+import { attachBoard, boardChanged, boardPointer, deleteTeamBoard, renameTeamBoard, shareAlways, startTeamBoards, stopTeamBoards, subscribeTeamBoards, teamBoardKey, teamBoards, teamBoardsVersion } from "./teamboards";
 import { LiveShare, type LiveView, type Share } from "./live";
 
 import {
@@ -788,9 +788,9 @@ function Board({ storeKey: key, teamBoard, runInTerminal: onRunInTerminal, share
         // Snapping is Excalidraw's grid mode, which also draws its own grid: so it is on only
         // while both the grid and snapping are, and our grid steps aside while it is.
         gridModeEnabled={grid.show && grid.snap}
-        isCollaborating={!!share}
+        isCollaborating={!!share || !!teamBoard}
         viewModeEnabled={!!share && !view.canEdit}
-        onPointerUpdate={((p: any) => liveRef.current?.pointer(p)) as any}
+        onPointerUpdate={((p: any) => { liveRef.current?.pointer(p); if (teamBoard) boardPointer(teamBoard, p); }) as any}
         // Our own button scheme, plus any https URL. Returning only deck:// here was what
         // produced "Embedding this url is currently not allowed" — that message is this
         // validator refusing the link, not a limitation of the library. Excalidraw's built-in
