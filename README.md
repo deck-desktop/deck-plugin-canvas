@@ -22,36 +22,24 @@ do not sync.
 
 ## Drawing together
 
-**Always shared with a team**: right-click a board's tab and choose **Always share with** *team*.
-The board moves out of the project and shows, with a team icon, in every project's boards on every
-member's Deck, with no invite and no host. Each member keeps a copy; whenever two of you are online
-together the copies are brought in step, shape by shape, and a board open on both follows along as
-it is drawn. Rename it and the others see the new name; **Delete** removes it for everyone, and
-**Stop sharing with the team** keeps a copy in this project and removes it for the others. Buttons
-that run something here, and embedded web pages, are never shared.
+Boards are shared with a Deck team (start or join one in Deck's Settings > Teams first), and once
+shared they stay shared: there is no invite to send and no host to wait for.
 
-**Share** (bottom of a board) lets the people in your Deck team draw on it with you, live, from
-their own Deck. Start or join a team in Deck's Settings > Teams first. There is no server of yours
-involved: the Decks connect directly, and find each other through public Nostr relays that only
-ever see an encrypted handshake.
+- **Share** (bottom of a board), or right-click its tab: **Always share with** *team*. The board
+  moves out of the project and shows, with a team icon, in every project's boards on every
+  member's Deck.
+- Each member keeps a copy. Whenever two of you are online together the copies are brought in
+  step, shape by shape, so what was drawn while you were apart arrives when you meet.
+- A board open on two Decks follows along as it is drawn, with each other's cursors and names. The
+  bottom of the board says whose it is and who else has it open.
+- Rename it and the others see the new name. **Delete** removes it for everyone; **Stop sharing
+  with the team** keeps a copy in this project and removes it for the others.
+- Buttons that run something on this machine, and embedded web pages, are never shared, and none
+  arrive from anyone else. Pictures up to 4 MB each are.
 
-- **Share** › everyone in a team, or one person in it. Sharing starts at once, with everyone able
-  to edit.
-- They get a notification, *name* invites you to *board*, with **Join**: one click opens the board,
-  with no code to type and no waiting to be let in. Someone offline gets it when they come online
-  while the board is still shared.
-- The others see your name from Deck's Settings > General (empty uses your Google account's name,
-  else your Windows account's).
-- While shared you see each other's cursors, names, laser pointer and pictures (up to 4 MB each),
-  and the bar shows each connection's round trip in ms.
-- Click the bar's status to let everyone edit or not, set one person to edit or view only, or
-  remove someone.
-- Switching tab or workspace keeps the share running; the board is up to date when you come back.
-- When the host stops, Canvas offers to keep what was drawn, go back to the board as it was
-  before sharing (a backup is taken when sharing starts), or keep both. A guest can keep a copy.
-
-Everyone needs the same Canvas build to share; a different one is told so. Networks where two
-machines cannot connect directly (some offices and mobile networks) are not handled yet.
+There is no server of yours involved: the Decks connect directly, and find each other through
+public Nostr relays that only ever see an encrypted handshake. Networks where two machines cannot
+connect directly (some offices and mobile networks) are not handled yet.
 
 Canvas was Deck's built-in Pinboard until 1.1. Deck renames old boards to Canvas's files the
 first time it starts, so a board you made there is the first tab here.

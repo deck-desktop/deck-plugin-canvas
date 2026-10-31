@@ -1,4 +1,4 @@
-// What a shared board sends, as pure functions so the check can run them without a network.
+// What a board shared with a team sends (teamboards.ts), as pure functions so the check can run them without a network.
 //
 // Every Excalidraw element carries a `version` that goes up on each edit, and Excalidraw's own
 // reconcileElements merges two copies by it. So each side only needs to remember, per element,
@@ -27,38 +27,6 @@ export function takeChanged<T extends Versioned>(elements: readonly T[], seen: S
   const out = elements.filter((e) => e.version > (seen.get(e.id) ?? -1));
   markSeen(out, seen);
   return out;
-}
-
-/**
- * Canvas's share protocol version, said in every hello (Deck's share layer compares it). Decks on
- * different versions do not share a board: one would half-understand the other. 5: sharing moved
- * into Deck, with the host letting each person in instead of a password.
- */
-export const SHARE_VERSION = 5;
-
-/**
- * A pencil stroke being drawn, cut down to the points added since `from`: what goes out while the
- * pen is down, instead of the whole stroke again on every send. `_from` marks it as a tail.
- */
-export interface Stroke { id: string; points: unknown[]; pressures?: unknown[] }
-export function strokeTail<T extends Stroke>(el: T, from: number): T & { _from: number } {
-  return { ...el, points: el.points.slice(from), pressures: el.pressures?.slice(from), _from: from };
-}
-
-/**
- * A received tail put back together with the stroke as this side already has it. Null when this
- * side is missing points before the tail (a lost message): the tail is then skipped, and the
- * whole stroke, sent when the pen lifts, fills it in.
- */
-export function joinStroke<T extends Stroke & { _from?: number }>(tail: T, have: Stroke | undefined): T | null {
-  if (tail._from === undefined) return tail;
-  if (!have || have.points.length < tail._from) return null;
-  const { _from, ...rest } = tail;
-  return {
-    ...rest,
-    points: have.points.slice(0, _from).concat(tail.points),
-    pressures: tail.pressures && (have.pressures ?? []).slice(0, _from).concat(tail.pressures),
-  } as T;
 }
 
 /** The parts of a picture and of an image element this file reads. */

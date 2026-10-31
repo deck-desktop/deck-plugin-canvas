@@ -1,9 +1,8 @@
-// Boards always shared with a Deck team: no invite, no host. Each member's Deck keeps its own copy
-// of the board, and whenever two members are online together their copies are brought together,
-// element by element, by Excalidraw's own versions (reconcileElements, as a live share does). A
+// Boards shared with a Deck team, the one way Canvas shares: no invite, no host. Each member's
+// Deck keeps its own copy of the board, and whenever two members are online together their copies
+// are brought together, element by element, by Excalidraw's own versions (reconcileElements). A
 // board drawn on while alone reaches the others the next time they meet; one open on two Decks at
-// once follows along as it is drawn. Share › invite (live.ts, teaminvite.ts) stays beside this for
-// a one-off session.
+// once follows along as it is drawn, with the others' cursors.
 //
 // Shared boards are not a project's: they show in every project's tabs (plugin.tsx), stored under
 // their own keys, `teamboard_<id>` and its `-files`. Which boards a team has is a list kept in
@@ -176,6 +175,7 @@ async function onMsg(team: string, msg: Msg, from: Member) {
   if (msg.t === "view") {
     const v = viewers.get(board.id) ?? viewers.set(board.id, new Set()).get(board.id)!;
     if (msg.on === true) v.add(from.id); else { v.delete(from.id); dropCursor(board.id, from.id); }
+    emit();
     return;
   }
   if (msg.t === "ptr") {
@@ -259,6 +259,15 @@ function dropCursor(id: string, member: string) {
 /** A member went offline: they look at nothing, and their pointers go. */
 function gone(member: string) {
   for (const [id, v] of viewers) { v.delete(member); dropCursor(id, member); }
+  emit();
+}
+
+/** The names of the others who have a shared board open now. */
+export function boardViewers(id: string): string[] {
+  const ids = viewers.get(id);
+  if (!ids?.size) return [];
+  const members = teamsView().flatMap((t) => t.members);
+  return [...ids].map((m) => members.find((x) => x.id === m)?.name ?? "someone");
 }
 /** Tell the team's members online whether this Deck has a shared board on screen. */
 function sayView(id: string, on: boolean) {

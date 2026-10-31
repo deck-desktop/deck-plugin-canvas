@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-- Boards always shared with a Deck team: "Always share with" a team on a board's tab, and it shows
-  in every member's Canvas, kept in step whenever members are online together, with no invite.
-  Share's one-off invite stays beside it.
+- Boards are shared with a Deck team for good: Share (or "Always share with" on a board's tab), and
+  the board shows in every member's Canvas, kept in step whenever members are online together,
+  with each other's cursors while it is open on two Decks. No invite and no host.
+- Share's live invite is gone, with its knock, view-only roles and end-of-sharing choices: sharing
+  is with a team only, and a shared board stays shared.
 
 - Excalidraw's translations other than English are left out by a setting in package.json rather
   than a deck-plugin.config.mjs, so the registry can rebuild and type-check it. Nothing changes in
