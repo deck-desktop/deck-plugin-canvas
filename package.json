@@ -20,5 +20,10 @@
     "lucide-react": "^1.31.0",
     "react": "^19.2.8",
     "typescript": "~5.8.3"
+  },
+  "deckPlugin": {
+    "leaveOut": [
+      "/locales/(?!en-)[^/]+\\.js$"
+    ]
   }
 }
