@@ -7,7 +7,7 @@
     "build": "deck-plugin build",
     "dev": "deck-plugin dev",
     "install-local": "deck-plugin install",
-    "test": "node src/sync.check.mjs"
+    "test": "node src/sync.check.mjs && node src/teamboards.check.mjs"
   },
   "devDependencies": {
     "@excalidraw/excalidraw": "0.18.0-4ce38fb",

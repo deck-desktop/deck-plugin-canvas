@@ -22,27 +22,26 @@ do not sync.
 
 ## Drawing together
 
-**Share** (bottom of a board) lets other people draw on it with you, live, from their own Deck.
+Boards are shared with a Deck team (start or join one in Deck's Settings > Teams first), and once
+shared they stay shared: there is no invite to send and no host to wait for.
+
+- **Share** (bottom of a board), or right-click its tab: **Share with** *team*. The board
+  moves out of the project and shows, with a team icon, in every project's boards on every
+  member's Deck.
+- Each member keeps a copy. Whenever two of you are online together the copies are brought in
+  step, shape by shape, so what was drawn while you were apart arrives when you meet.
+- A board open on two Decks follows along as it is drawn, with each other's cursors and names. The
+  bottom of the board says whose team it is; at the top right, an avatar for each of the others
+  with their round trip in ms under it (amber over 250). Past three they fold into "+N"; click
+  any for the full list.
+- Rename it and the others see the new name. **Delete** removes it for everyone; **Stop sharing
+  with the team** keeps a copy in this project and removes it for the others.
+- Buttons that run something on this machine, and embedded web pages, are never shared, and none
+  arrive from anyone else. Pictures up to 4 MB each are.
+
 There is no server of yours involved: the Decks connect directly, and find each other through
-public Nostr relays that only ever see an encrypted handshake.
-
-- **Sharing** starts at once, with everyone able to edit; send them the code shown in the bar.
-- **Joining** asks for the code, then waits for the host to let you in.
-- The others see your name from Deck's Settings > General (empty uses your Google account's name,
-  else your Windows account's).
-- The host sees "*name* wants to join" in the bar, with **Let in** and ✕, or as a notification
-  with **Let in** and **Deny** while the board is off screen. Nobody is sent the board until let in, so a code that
-  ends up in the wrong place lets no one in by itself.
-- While shared you see each other's cursors, names, laser pointer and pictures (up to 4 MB each),
-  and the bar shows each connection's round trip in ms.
-- Click the bar's status to let everyone edit or not, set one person to edit or view only, or
-  remove someone.
-- Switching tab or workspace keeps the share running; the board is up to date when you come back.
-- When the host stops, Canvas offers to keep what was drawn, go back to the board as it was
-  before sharing (a backup is taken when sharing starts), or keep both. A guest can keep a copy.
-
-Everyone needs the same Canvas build to share; a different one is told so. Networks where two
-machines cannot connect directly (some offices and mobile networks) are not handled yet.
+public Nostr relays that only ever see an encrypted handshake. Networks where two machines cannot
+connect directly (some offices and mobile networks) are not handled yet.
 
 Canvas was Deck's built-in Pinboard until 1.1. Deck renames old boards to Canvas's files the
 first time it starts, so a board you made there is the first tab here.

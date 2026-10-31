@@ -20,14 +20,13 @@ import { useEffect, useRef, useState, useSyncExternalStore, type PointerEvent } 
 import { TabStrip, ConfirmDialog, NamePrompt, ContextMenu, type ConfirmState, type NamePromptState, type MenuEntry } from "../shim/ui.js";
 import { Excalidraw, Footer, serializeAsJSON } from "@excalidraw/excalidraw";
 import excalidrawCss from "@excalidraw/excalidraw/index.css";
-import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Check, Pencil, Trash2, UserX, UserPlus, Grid3x3, Magnet } from "lucide-react";
-import { cleanCode, newCode, type Mode, type Person, type Roles } from "../shim/p2p.js";
-import { LiveShare, type LiveView, type Share } from "./live";
+import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, Copy, Pencil, Trash2, Grid3x3, Magnet, Users } from "lucide-react";
+import { subscribeTeams, teamsView } from "../shim/p2p.js";
+import { attachBoard, boardChanged, boardPointer, boardViewers, canManage, deleteTeamBoard, renameTeamBoard, shareAlways, startTeamBoards, stopTeamBoards, subscribeTeamBoards, teamBoardKey, teamBoards, teamBoardsVersion, type Viewer } from "./teamboards";
 
 import {
   configRead, configWrite, openExternal, openFile, runScriptNow, type ScriptJob,
 } from "../shim/bridge.js";
-import { userName } from "../shim/settings.js";
 
 // Excalidraw's stylesheet, and Deck's colours over it. A plugin is one plugin.js, so the CSS
 // arrives as text (the builder's .css loader) and goes in as a <style>, taken out again on dispose.
@@ -79,7 +78,7 @@ const DECK_THEME = `
     var(--grid-minor-size, 20px) var(--grid-minor-size, 20px), var(--grid-minor-size, 20px) var(--grid-minor-size, 20px);
   background-position: var(--grid-x, 0) var(--grid-y, 0);
 }
-/* The share controls, in the footer row beside zoom and undo, drawn the way those are: a
+/* The share control, in the footer row beside zoom and undo, drawn the way those are: a
    panel of borderless buttons (not an .Island, which Deck draws with a border the zoom and undo
    panels do not have) the height of Excalidraw's large buttons. */
 .deck-canvas .deck-share { display: flex; align-items: center; height: var(--lg-button-size); overflow: hidden;
@@ -90,8 +89,16 @@ const DECK_THEME = `
 .deck-canvas .deck-share > button:hover { background: var(--button-hover-bg); }
 .deck-canvas .deck-share > button svg, .deck-canvas .deck-share-text svg { width: var(--lg-icon-size); height: var(--lg-icon-size); }
 .deck-canvas .deck-share > .deck-share-text { display: flex; align-items: center; gap: .5rem; padding: 0 .75rem; color: var(--color-gray-50, inherit); white-space: nowrap; }
-/* Someone asking to join: outlined in the accent, so it is noticed. */
-.deck-canvas .deck-knock { box-shadow: 0 0 0 1px var(--color-primary) inset; }
+/* On a shared board our avatars (Viewers) stand in for Excalidraw's, which cannot show a round trip. */
+.deck-canvas .UserList, .deck-canvas .UserList-Wrapper { display: none; }
+.deck-canvas .deck-viewers { display: flex; gap: 6px; align-items: flex-start; margin-inline-end: 4px; position: relative; }
+.deck-canvas .deck-viewer { display: flex; flex-direction: column; align-items: center; gap: 3px; border: 0; padding: 0; background: none; cursor: pointer; font: inherit; }
+.deck-canvas .deck-viewer-dot { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; }
+.deck-canvas .deck-viewer-ms { font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 999px; background: var(--bg-elev); color: var(--text-muted); white-space: nowrap; }
+.deck-canvas .deck-viewer-ms.slow { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #f59e0b; }
+.deck-canvas .deck-viewer-list { position: absolute; top: 56px; right: 0; z-index: 10; width: 240px; padding: 6px; border-radius: 10px;
+  background: var(--bg-elev); border: 1px solid var(--border-subtle); box-shadow: 0 8px 24px rgb(0 0 0 / 0.35); }
+.deck-canvas .deck-viewer-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; font-size: 12.5px; color: var(--text-primary); }
 /* The same gap Excalidraw leaves between its zoom and undo islands. */
 .deck-canvas .deck-share-row { display: flex; gap: .6em; align-items: center; margin-inline-start: .6em; }
 `;
@@ -99,11 +106,12 @@ const style = document.createElement("style");
 style.dataset.plugin = "canvas";
 style.textContent = excalidrawCss + DECK_THEME;
 document.head.appendChild(style);
+// Boards shared with a team keep in step with the Canvas tab closed too (teamboards.ts).
+void startTeamBoards().catch((e) => console.warn("[canvas] starting the team boards failed", e));
+
 export function dispose() {
+  stopTeamBoards();
   style.remove();
-  // A reload re-imports the plugin: the old copy's shares end here rather than run on unseen.
-  for (const l of lives.values()) void l.close();
-  lives.clear();
 }
 
 /** Folder-derived key, so the drawer follows the project rather than a workspace uuid. */
@@ -123,23 +131,11 @@ const boardsKey = (project: string) => `${project}-boards`;
 const sceneKey = (project: string, id: string) => (id ? `${project}_${id}` : project);
 const DEFAULT_BOARDS: BoardRef[] = [{ id: "", name: "Board" }];
 const newId = () => Math.random().toString(36).slice(2, 10);
+/** A board always shared with a team is a tab id `team:<id>` (teamboards.ts), beside the project's own. */
+const teamOf = (tab: string) => (tab.startsWith("team:") ? tab.slice(5) : null);
 
 /** Which board was open in each project, kept across mounts, like Notes does for its notes. */
 const lastBoard = new Map<string, string>();
-
-/**
- * The share each project was last in. A host who opens another of its boards ends that share, and
- * coming back offers Resume sharing in one click instead of typing the code again.
- * (Leaving the Canvas tab does not end a share at all: see `lives`.) Memory only, never written
- * to disk, gone when Deck restarts; cleared when a share is ended on purpose (Stop, Leave, Close).
- */
-const remembered = new Map<string, Share & { board: string }>();
-
-/**
- * The live share of each project, kept while the Canvas tab is off screen (see live.ts): switching
- * tab or workspace no longer ends it. Ended on purpose only: Stop, Leave, Close.
- */
-const lives = new Map<string, LiveShare>();
 
 
 /**
@@ -153,13 +149,8 @@ const lives = new Map<string, LiveShare>();
  */
 const filesKey = (key: string) => `${key}-files`;
 
-/**
- * The board as it was when sharing started, in `<key>-share-backup`, so that when sharing ends the
- * host can keep what was drawn together or go back. On disk rather than in memory: if Deck closes
- * mid-share, the board offers the same choice the next time it opens.
- */
+/** What a live share (since removed) kept of a board, `<key>-share-backup`: cleared with the board. */
 const backupKey = (key: string) => `${key}-share-backup`;
-interface Backup { scene: string; files: string; at: number }
 
 /** The attribute TabStrip puts on each tab (for drag-reordering), read here to know which tab
  *  was right-clicked without a change to TabStrip itself. */
@@ -188,42 +179,12 @@ export function PaneView({ cwd, runInTerminal }: {
   const [active, setActive] = useState("");
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [renaming, setRenaming] = useState<NamePromptState | null>(null);
-  // A live share: hosting this board, or a guest on someone else's. A guest's board is theirs, not
-  // this project's, so it is shown in place of the local one and never saved over it.
-  // A share still running from before the tab was left comes back as it is.
-  const [share, setShareState] = useState<Share | null>(() => lives.get(project)?.share ?? null);
-  // A share left by opening another board while hosting: offered back in one click.
-  const [offer, setOffer] = useState(() => (lives.has(project) ? null : remembered.get(project) ?? null));
-  // The share as last set, for the function form below (Rejoin bumps the current one).
-  const shareNow = useRef<Share | null>(null);
-  shareNow.current = share;
-  const setShare = (next: Share | null | ((x: Share | null) => Share | null)) => {
-    const v = typeof next === "function" ? next(shareNow.current) : next;
-    shareNow.current = v;
-    setShareState(v);
-    if (v) { remembered.set(project, { ...v, board: v.host ? active : "" }); setOffer(null); }
-  };
-  /** Ended on purpose: nothing to offer back. */
-  const endShare = () => {
-    const l = lives.get(project);
-    // The host ending on purpose tells everyone; a guest just leaves.
-    if (l) { void l.close(l.share.host); lives.delete(project); }
-    remembered.delete(project); setOffer(null); setShare(null);
-  };
-  /** Back into the remembered share; a host goes back to the board it was sharing. */
-  const resume = () => {
-    if (!offer) return;
-    if (offer.host && offer.board !== active) { lastBoard.set(project, offer.board); setActive(offer.board); }
-    const { board: _b, ...again } = offer;
-    setShare({ ...again, attempt: (again.attempt ?? 0) + 1 });
-  };
-  // Joining asks only for the code. No password: the host lets each person in (see p2p in Deck),
-  // which is less to pass on and safer if the code leaks. No name either: Deck's own (Settings >
-  // General, else the Google or Windows account's) is what the others see.
-  const [codePrompt, setCodePrompt] = useState<NamePromptState | null>(null);
+  const teams = useSyncExternalStore(subscribeTeams, teamsView);
+  useSyncExternalStore(subscribeTeamBoards, teamBoardsVersion);
+  const shared = teamBoards();
+  const tActive = teamOf(active);
+  const activeKey = tActive ? teamBoardKey(tActive) : sceneKey(project, active);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null);
-  // Bumped to remount the board after its files were replaced on disk (a restore from a backup).
-  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -233,7 +194,7 @@ export function PaneView({ cwd, runInTerminal }: {
       const list: BoardRef[] = t.trim() ? JSON.parse(t) : DEFAULT_BOARDS;
       const want = lastBoard.get(project);
       setBoards(list.length ? list : DEFAULT_BOARDS);
-      setActive(want !== undefined && list.some((b) => b.id === want) ? want : list[0]?.id ?? "");
+      setActive(want !== undefined && (list.some((b) => b.id === want) || teamOf(want)) ? want : list[0]?.id ?? "");
     }).catch((e) => { console.warn("[canvas] boards load failed", e); if (alive) { setBoards(DEFAULT_BOARDS); setActive(""); } });
     return () => { alive = false; };
   }, [project]);
@@ -242,16 +203,7 @@ export function PaneView({ cwd, runInTerminal }: {
     setBoards(next);
     void configWrite(boardsKey(project), JSON.stringify(next)).catch((e) => console.warn("[canvas] boards save failed", e));
   };
-  const open = (id: string) => {
-    // Hosting is of one board: going to another ends it. Its backup stays on disk, so coming
-    // back to the board offers to keep the shared changes or go back.
-    if (share?.host && id !== active) {
-      const l = lives.get(project);
-      if (l) { void l.close(); lives.delete(project); }
-      setShareState(null); setOffer(remembered.get(project) ?? null);
-    }
-    lastBoard.set(project, id); setActive(id);
-  };
+  const open = (id: string) => { lastBoard.set(project, id); setActive(id); };
 
   if (!boards) return <Loading />;
 
@@ -264,6 +216,17 @@ export function PaneView({ cwd, runInTerminal }: {
   };
 
   const remove = (id: string) => {
+    const t = teamOf(id), tb = t && shared.find((x) => x.id === t);
+    if (tb && !canManage(tb.id)) {
+      setConfirm({ title: "Only whoever shared it can delete it", acknowledge: true, onConfirm: () => {},
+        body: `"${tb.name}" can be deleted, or stop being shared, by the member who shared it or the team's owner. Duplicate keeps a copy in your own boards.` });
+      return;
+    }
+    if (tb) {
+      setConfirm({ title: `Delete "${tb.name}" for the team?`, body: "It goes from every member's Deck, as they come online.", confirmLabel: "Delete",
+        onConfirm: () => { void deleteTeamBoard(tb.id); if (id === active) open(boards[0]?.id ?? ""); } });
+      return;
+    }
     const b = boards.find((x) => x.id === id);
     if (!b) return;
     setConfirm({
@@ -308,20 +271,55 @@ export function PaneView({ cwd, runInTerminal }: {
 
   // From what is saved, so a stroke drawn in the last moment (the save waits 800ms) can be missing.
   const duplicate = async (id: string) => {
-    const b = boards.find((x) => x.id === id);
+    const t = teamOf(id);
+    const b = t ? shared.find((x) => x.id === t) : boards.find((x) => x.id === id);
     if (!b) return;
-    const key = sceneKey(project, id);
+    const key = t ? teamBoardKey(t) : sceneKey(project, id);
     const [scene, files] = await Promise.all([configRead(key).catch((e) => { console.warn("[canvas] board read failed", e); return ""; }), configRead(filesKey(key)).catch((e) => { console.warn("[canvas] board read failed", e); return ""; })]);
     open((await addCopy(`${b.name} copy`, scene, files, id)).id);
   };
 
   const rename = (id: string) => {
+    const t = teamOf(id), tb = t && shared.find((x) => x.id === t);
+    if (tb) {
+      setRenaming({ title: "Rename shared board", initial: tb.name, confirmLabel: "Rename", onSave: (to) => { if (to.trim()) void renameTeamBoard(tb.id, to.trim()); } });
+      return;
+    }
     const b = boards.find((x) => x.id === id);
     if (!b) return;
     setRenaming({
       title: "Rename board", initial: b.name, confirmLabel: "Rename",
       onSave: (to) => { if (to.trim()) save(boards.map((x) => (x.id === id ? { ...x, name: to.trim() } : x))); },
     });
+  };
+
+  /** A project board, moved to be always shared with a team: it leaves this project's tabs. */
+  const shareWith = async (id: string, team: string) => {
+    const b = boards.find((x) => x.id === id);
+    if (!b) return;
+    const key = sceneKey(project, id);
+    const [scene, files] = await Promise.all([configRead(key).catch(() => ""), configRead(filesKey(key)).catch(() => "")]);
+    const tb = await shareAlways(b.name, team, scene, files).catch((e) => { console.warn("[canvas] sharing a board with the team failed", e); return null; });
+    if (!tb) return;
+    // The drawing now lives under the shared board's keys: the project's copy goes, or a project's
+    // only board (id "", which comes back as the empty first board) would still hold it.
+    for (const k of [key, filesKey(key), backupKey(key)]) void configWrite(k, "").catch((e) => console.warn("[canvas] clearing a board moved to the team failed", e));
+    const rest = boards.filter((x) => x.id !== id);
+    save(rest.length ? rest : DEFAULT_BOARDS);
+    open(`team:${tb.id}`);
+  };
+  /** A shared board back into this project: a copy here, and the board goes from the team. */
+  const stopSharing = (id: string) => {
+    const t = teamOf(id), tb = t && shared.find((x) => x.id === t);
+    if (!tb) return;
+    setConfirm({ title: `Stop sharing "${tb.name}"?`, confirmLabel: "Stop sharing", danger: false,
+      body: "A copy stays in this project's boards; the board goes from the others' Decks.",
+      onConfirm: () => void (async () => {
+        const [scene, files] = await Promise.all([configRead(teamBoardKey(tb.id)).catch(() => ""), configRead(filesKey(teamBoardKey(tb.id))).catch(() => "")]);
+        const copy = await addCopy(tb.name, scene, files, boards[boards.length - 1]?.id ?? "");
+        await deleteTeamBoard(tb.id);
+        open(copy.id);
+      })() });
   };
 
   return (
@@ -334,12 +332,14 @@ export function PaneView({ cwd, runInTerminal }: {
         setTabMenu({ x: e.clientX, y: e.clientY, id });
       }}>
       <TabStrip chip
-        tabs={boards.map((b) => ({ id: b.id, title: b.name, closeTitle: "Delete board" }))}
+        tabs={[...boards.map((b) => ({ id: b.id, title: b.name, closeTitle: "Delete board" })),
+          ...shared.map((b) => ({ id: `team:${b.id}`, title: b.name, icon: <Users size={12} />, closeTitle: canManage(b.id) ? "Delete for the team" : "Only whoever shared it can delete it" }))]}
         activeId={active}
         onSelect={open}
         onClose={remove}
         onDoubleClick={rename}
         onReorder={(from, to) => {
+          if (teamOf(from) || teamOf(to)) return;
           const next = boards.filter((b) => b.id !== from);
           next.splice(boards.findIndex((b) => b.id === to), 0, boards.find((b) => b.id === from)!);
           save(next);
@@ -351,36 +351,20 @@ export function PaneView({ cwd, runInTerminal }: {
         <ContextMenu x={tabMenu.x} y={tabMenu.y} onClose={() => setTabMenu(null)} items={[
           { label: "Rename", icon: Pencil, onClick: () => rename(tabMenu.id) },
           { label: "Duplicate", icon: Copy, onClick: () => void duplicate(tabMenu.id) },
-          "sep",
-          { label: "Delete", icon: Trash2, danger: true, onClick: () => remove(tabMenu.id) },
+          ...(teamOf(tabMenu.id)
+            ? (canManage(teamOf(tabMenu.id)!) ? [{ label: "Stop sharing with the team", icon: Users, onClick: () => stopSharing(tabMenu.id) }] : [])
+            : teams.map((t) => ({ label: `Share with ${t.name}`, icon: Users, onClick: () => void shareWith(tabMenu.id, t.id) }))),
+          ...(!teamOf(tabMenu.id) || canManage(teamOf(tabMenu.id)!) ? ["sep" as const, { label: "Delete", icon: Trash2, danger: true, onClick: () => remove(tabMenu.id) }] : []),
         ]} />
       )}
-      {/* Keyed by board: Excalidraw reads initialData only when it mounts. A guest gets a board of
-          its own, which starts empty and fills from the host. */}
-      <Board key={share && !share.host ? `shared:${share.code}` : `${sceneKey(project, active)}#${reload}`}
-        storeKey={sceneKey(project, active)} runInTerminal={runInTerminal}
-        share={share}
-        boardName={boards.find((b) => b.id === active)?.name ?? "Board"}
-        onReload={() => setReload((n) => n + 1)}
-        onSaveCopy={(name, scene, files) => addCopy(name, scene, files, active).then(() => {})}
-        // No questions: the others may draw until the host says otherwise from the bar's menu.
-        onHost={() => void userName().then((name) => setShare({ code: newCode(), host: true, name, mode: "edit" }))}
-        onJoin={() => setCodePrompt({
-          title: "Join a shared board", subtitle: "The code from whoever is sharing, like abcd-efgh-jkmn-pqrs",
-          initial: "", confirmLabel: "Next",
-          onSave: (text) => {
-            const code = cleanCode(text);
-            if (code) void userName().then((name) => setShare({ code, host: false, name }));
-          },
-        })}
-        onStop={endShare}
-        offer={!share && offer ? offer : null}
-        project={project}
-        onResume={resume}
-        onDismissOffer={() => { remembered.delete(project); setOffer(null); setReload((n) => n + 1); }}
-        onRejoin={() => setShare((x) => x && { ...x, attempt: (x.attempt ?? 0) + 1 })} />
+      {/* Keyed by board: Excalidraw reads initialData only when it mounts. */}
+      <Board key={activeKey}
+        storeKey={activeKey} teamBoard={tActive ?? undefined} runInTerminal={runInTerminal}
+        teams={teams.map((t) => ({ id: t.id, name: t.name }))}
+        team={tActive ? teams.find((t) => t.id === shared.find((b) => b.id === tActive)?.team)?.name ?? "the team" : ""}
+        here={tActive ? boardViewers(tActive) : []}
+        onShare={(team) => void shareWith(active, team)} />
       <ConfirmDialog state={confirm} onClose={() => setConfirm(null)} />
-      <NamePrompt state={codePrompt} onClose={() => setCodePrompt(null)} />
       <NamePrompt state={renaming} onClose={() => setRenaming(null)} />
     </div>
   );
@@ -424,33 +408,19 @@ function isLight(hex: string): boolean {
   return 0.2126 * lin(m[1]) + 0.7152 * lin(m[2]) + 0.0722 * lin(m[3]) > 0.4;
 }
 
-function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName, onReload, onSaveCopy, onHost, onJoin, onStop, onRejoin, offer, onResume, onDismissOffer, project }: {
+function Board({ storeKey: key, teamBoard, runInTerminal: onRunInTerminal, teams, team, here, onShare }: {
   storeKey: string;
-  /** The project, which the live share is kept under. */
-  project: string;
+  /** Set for a board always shared with a team (teamboards.ts): its id there. */
+  teamBoard?: string;
   runInTerminal: (label: string, command: string) => void;
-  share: Share | null;
-  boardName: string;
-  /** Remount from what is on disk. */
-  onReload: () => void;
-  /** Add a board beside this one holding the given scene and pictures. */
-  onSaveCopy: (name: string, scene: string, files: string) => Promise<void>;
-  onHost: () => void;
-  onJoin: () => void;
-  onStop: () => void;
-  /** Connect again to the same board (a guest whose connection dropped or never came up). */
-  onRejoin: () => void;
-  /** A share left by switching away, offered back in the bar. */
-  offer: Share | null;
-  onResume: () => void;
-  onDismissOffer: () => void;
+  /** The Deck teams this one is in, for Share. */
+  teams: { id: string; name: string }[];
+  /** A shared board's team, by name, and who else has it open now (with their round trip). */
+  team: string;
+  here: Viewer[];
+  /** Share this board with a team, for good (it moves out of the project). */
+  onShare: (team: string) => void;
 }) {
-  const offerRef = useRef(offer);
-  offerRef.current = offer;
-  const shareRef = useRef(share);
-  shareRef.current = share;
-  // A guest's board is the host's: nothing of it is written to this machine.
-  const guest = !!share && !share.host;
   const [initialData, setInitialData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -483,6 +453,9 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   // The scene waiting on the debounce, so leaving the board (switching tab, closing the pane)
   // writes it at once instead of dropping the last stroke.
   const pending = useRef<string | null>(null);
+  // A board always shared with a team is attached to it while on screen (teamboards.ts).
+  const detachTeam = useRef<(() => void) | null>(null);
+  useEffect(() => () => { detachTeam.current?.(); detachTeam.current = null; }, [key]);
   useEffect(() => () => {
     clearTimeout(saveTimer.current);
     if (pending.current !== null) void configWrite(key, pending.current).catch((e) => console.warn("[canvas] board save failed", e));
@@ -500,22 +473,6 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    // Still shared from before the tab was left: open from the share's copy, which has what
-    // arrived meanwhile, rather than from disk.
-    const l = lives.get(project);
-    if (share && l?.matches(share) && (guest || l.boardKey === key)) {
-      const c = l.current;
-      savedFileIds.current = new Set(Object.keys(c.files));
-      lastSaved.current = "";
-      setInitialData({ elements: c.elements, appState: { ...(c.appState ?? {}), collaborators: undefined, theme: "dark" }, files: c.files });
-      setLoading(false);
-      return;
-    }
-    if (guest) {
-      setInitialData({ elements: [], appState: { theme: "dark", viewBackgroundColor: "transparent" }, files: {} });
-      setLoading(false);
-      return;
-    }
     Promise.all([configRead(key), configRead(filesKey(key)).catch((e) => { console.warn("[canvas] pictures load failed", e); return ""; })]).then(([t, f]) => {
       if (!alive) return;
       const scene = t.trim() ? JSON.parse(t) : { elements: [], appState: {}, files: {} };
@@ -540,10 +497,6 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
         scrollToContent: true,
       });
       setLoading(false);
-      // A share that ended without a choice (Deck closed, or another board opened while hosting).
-      // Not while hosting it can be resumed: the backup is still that share's, and Dismiss on the
-      // offer brings this choice back.
-      if (!offerRef.current?.host && !shareRef.current?.host) configRead(backupKey(key)).then((b) => { if (alive && b.trim()) setEnding("leftover"); }).catch(() => {});
     }).catch((e) => {
       console.warn("[canvas] board load failed", e);
       if (!alive) return;
@@ -552,93 +505,6 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
     });
     return () => { alive = false; };
   }, [key]);
-
-  // ---- The backup taken when hosting starts, and what happens to it when hosting ends ----
-  // "stop": the host pressed Stop. "leftover": the board opened with a backup from an earlier share.
-  const [ending, setEnding] = useState<"stop" | "leftover" | null>(null);
-
-  useEffect(() => {
-    if (!share?.host) return;
-    const a = apiRef.current;
-    if (!a) return;
-    // The oldest backup wins: sharing again before choosing keeps the board from before the first.
-    const snapshot: Backup = {
-      scene: serializeAsJSON(a.getSceneElements(), a.getAppState(), {}, "local"),
-      files: JSON.stringify(a.getFiles() ?? {}),
-      at: Date.now(),
-    };
-    configRead(backupKey(key)).catch(() => "").then((had) => {
-      if (!had.trim()) void configWrite(backupKey(key), JSON.stringify(snapshot)).catch((e) => console.warn("[canvas] backup save failed", e));
-    });
-  }, [share?.code]);
-
-  const dropBackup = () => configWrite(backupKey(key), "").catch((e) => console.warn("[canvas] backup delete failed", e));
-
-  /** Put the board back as it was before sharing, from the backup on disk. */
-  const restore = async () => {
-    const raw = await configRead(backupKey(key)).catch((e) => { console.warn("[canvas] backup read failed", e); return ""; });
-    if (!raw.trim()) return;
-    const b: Backup = JSON.parse(raw);
-    // Whatever is waiting to be saved belongs to the version being thrown away.
-    clearTimeout(saveTimer.current);
-    pending.current = null;
-    await configWrite(key, b.scene).catch((e) => console.warn("[canvas] restore failed", e));
-    await configWrite(filesKey(key), b.files).catch((e) => console.warn("[canvas] restore failed", e));
-    await dropBackup();
-    onReload();
-  };
-
-  /** The board as it is now, as a new board beside this one. */
-  const saveCurrentAsCopy = async () => {
-    const a = apiRef.current;
-    if (!a) return;
-    const when = new Date().toLocaleDateString(undefined, { day: "numeric", month: "short" });
-    await onSaveCopy(`${boardName} (shared ${when})`,
-      serializeAsJSON(a.getSceneElements(), a.getAppState(), {}, "local"), JSON.stringify(a.getFiles() ?? {}));
-  };
-
-  const finish = async (choice: "keep" | "restore" | "both") => {
-    setEnding(null);
-    if (share?.host) onStop();
-    if (choice === "keep") await dropBackup();
-    else {
-      if (choice === "both") await saveCurrentAsCopy();
-      await restore();
-    }
-  };
-
-  // ---- Sharing: the live share (live.ts), kept while the board is off screen ----
-  const [live, setLive] = useState<LiveShare | null>(null);
-  const liveRef = useRef<LiveShare | null>(null);
-  liveRef.current = live;
-  useEffect(() => {
-    if (!share) { setLive(null); return; }
-    let l = lives.get(project);
-    if (!l || !l.matches(share)) {
-      if (l) void l.close();
-      const a = apiRef.current;
-      l = new LiveShare(share, key, boardName, a
-        ? { elements: a.getSceneElementsIncludingDeleted(), appState: a.getAppState(), files: a.getFiles() ?? {} }
-        : { elements: [], appState: {}, files: {} });
-      lives.set(project, l);
-    }
-    setLive(l);
-    if (apiRef.current) l.attach(apiRef.current);
-    const mine = l;
-    // Off screen, not over: the share goes on working on the board's last scene.
-    return () => mine.detach(apiRef.current);
-  }, [share?.code, share?.attempt]);
-  const view = useSyncExternalStore(live?.subscribe ?? noSubscribe, live?.getView ?? noView);
-  const { gone: hostGone, stuck, note } = view;
-  const hostName = { current: view.hostName };
-
-  /** A guest keeping what is on screen: the host's board, as a board of their own. */
-  const keepGuestCopy = async () => {
-    const a = apiRef.current;
-    if (a) await onSaveCopy(`${view.hostName}'s board`,
-      serializeAsJSON(a.getSceneElements(), a.getAppState(), {}, "local"), JSON.stringify(a.getFiles() ?? {}));
-    onStop();
-  };
 
   const onChange = (elements: readonly any[], appState: any, files: any) => {
     placeGrid(appState);
@@ -649,12 +515,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
       const el = appState.activeEmbeddable.element;
       apiRef.current?.updateScene({ appState: { activeEmbeddable: { element: el, state: "active" } } });
     }
-    const l = liveRef.current;
-    if (l && apiRef.current) {
-      l.seenOnScreen(apiRef.current.getSceneElementsIncludingDeleted(), appState, files ?? {});
-      l.queueSend();
-    }
-    if (guest) return;
+    if (teamBoard) boardChanged(teamBoard);
     // A new picture: write the pictures file, once. Excalidraw's `files` holds every picture the
     // board has loaded, so this keeps one a deleted element still points at, for undo.
     const ids = Object.keys(files ?? {});
@@ -677,7 +538,6 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   };
 
   const runButton = (action: ButtonAction, arg: string, label: string) => {
-    if (guest) return; // the host's paths and commands, not this machine's
     if (action === "term") { onRunInTerminal(label, arg); return; }
     if (action === "open") { void openOne(arg); return; }
     const job = scriptsRef.current.find((j) => j.id === arg);
@@ -715,13 +575,12 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
         // share buttons are drawn for one or the other, and the dark set was pale on a light page.
         theme={light ? "light" : "dark"}
         onChange={onChange}
-        onExcalidrawAPI={(api: any) => { apiRef.current = api; liveRef.current?.attach(api); if (api) requestAnimationFrame(() => placeGrid(apiRef.current?.getAppState())); }}
+        onExcalidrawAPI={(api: any) => { apiRef.current = api; detachTeam.current?.(); detachTeam.current = api && teamBoard ? attachBoard(teamBoard, api) : null; if (api) requestAnimationFrame(() => placeGrid(apiRef.current?.getAppState())); }}
         // Snapping is Excalidraw's grid mode, which also draws its own grid: so it is on only
         // while both the grid and snapping are, and our grid steps aside while it is.
         gridModeEnabled={grid.show && grid.snap}
-        isCollaborating={!!share}
-        viewModeEnabled={!!share && !view.canEdit}
-        onPointerUpdate={((p: any) => liveRef.current?.pointer(p)) as any}
+        isCollaborating={!!teamBoard}
+        onPointerUpdate={((p: any) => { if (teamBoard) boardPointer(teamBoard, p); }) as any}
         // Our own button scheme, plus any https URL. Returning only deck:// here was what
         // produced "Embedding this url is currently not allowed" — that message is this
         // validator refusing the link, not a limitation of the library. Excalidraw's built-in
@@ -744,6 +603,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
         // board, so turning it on once is enough.
         renderTopRightUI={() => (
           <div className="flex gap-1">
+            {teamBoard && here.length > 0 && <Viewers here={here} />}
             <button onClick={() => setGridState({ ...grid, show: !grid.show })}
               title={grid.show ? "Hide the grid" : "Show the grid"} aria-pressed={grid.show} className="deck-grid-toggle">
               <Grid3x3 size={16} />
@@ -764,24 +624,13 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
         }}
       >
         <Footer>
-          <ShareBar share={share} peers={view.peers} saving={saving && !guest}
-            knocking={view.knocking} waiting={view.waiting} hostName={view.hostName}
-            onAllow={(id) => liveRef.current?.allow(id)} onDeny={(id) => liveRef.current?.deny(id)}
-            onKick={(id) => liveRef.current?.kick(id)} note={note} stuck={stuck} onRejoin={onRejoin}
-            roles={view.roles} canEdit={view.canEdit}
-            onDefault={(m) => liveRef.current?.setDefault(m)} onPerson={(id, m) => liveRef.current?.setPerson(id, m)}
-            onHost={onHost} onJoin={onJoin} onStop={share?.host ? () => setEnding("stop") : onStop}
-            offer={offer} onResume={onResume} onDismissOffer={onDismissOffer} />
+          <TeamBar teams={teams} team={team} saving={saving} onShare={onShare} />
         </Footer>
       </Excalidraw>}
 
       {/* The Link and Button entries that used to sit here were removed as unused. Buttons
           already on a board still work — runButton, decodeButton and AddButtonForm are all
           intact — there is simply no toolbar entry creating new ones. */}
-      {hostGone && <HostGoneDialog why={hostGone} host={hostName.current}
-        onKeep={() => void keepGuestCopy()} onClose={onStop} onRejoin={onRejoin} />}
-      {ending && <ShareEndDialog leftover={ending === "leftover"} onChoose={(c) => void finish(c)}
-        onCancel={() => setEnding(null)} />}
     </div>
   );
 }
@@ -813,210 +662,90 @@ function DeckButton({ label, action, arg, scripts, onRun }: {
   );
 }
 
-/** A choice in the end-of-sharing dialogs: a title and what it does, on the elevated surface. */
-const CHOICE = "flex w-full flex-col items-start rounded-lg border border-subtle bg-elev px-3 py-2 text-left transition-colors hover:border-strong";
-/** The dialogs' title and their line under it. */
-const DIALOG_TITLE = "mb-1 text-[13px] font-medium text-text-primary";
-const DIALOG_BODY = "mb-3 text-[12px] leading-relaxed text-text-muted";
-
-/** A round trip above this is a slow connection: the dot in the bar turns amber. */
+/** A round trip above this is a slow connection: its number turns amber. */
 const SLOW_MS = 250;
+/** How many of the others are drawn as avatars before the rest fold into "+N". */
+const MAX_AVATARS = 3;
+/** Each person's own colour, the same on every Deck: from their id. */
+const AVATAR_COLORS = [["#f9a8a8", "#3b0d0d"], ["#93c5fd", "#0b2545"], ["#fcd34d", "#3d2a00"], ["#c4b5fd", "#24124d"], ["#86efac", "#0b3d1e"], ["#fda4af", "#4c0519"], ["#7dd3fc", "#082f49"]];
+const avatarColor = (id: string) => AVATAR_COLORS[[...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % AVATAR_COLORS.length];
+const msText = (ms?: number) => (ms === undefined ? "…" : `${ms} ms`);
 
-/** Share, Join, or while shared: the code, who is here, and Stop. */
-function ShareBar({ share, peers, saving, onHost, onJoin, onStop, onKick, note, stuck, onRejoin, offer, onResume, onDismissOffer, roles, canEdit, onDefault, onPerson, knocking, waiting, hostName, onAllow, onDeny }: {
-  /** The host: who is asking to be let in. */
-  knocking: Person[];
-  onAllow: (id: string) => void;
-  onDeny: (id: string) => void;
-  /** A guest the host has not let in yet. */
-  waiting: boolean;
-  hostName: string;
-  /** Who may draw, and whether this Deck may. */
-  roles: Roles;
-  canEdit: boolean;
-  /** The host: everyone's default, and one person's own choice (`null` follows the default). */
-  onDefault: (mode: Mode) => void;
-  onPerson: (id: string, mode: Mode | null) => void;
-  offer: Share | null;
-  onResume: () => void;
-  onDismissOffer: () => void;
-  share: Share | null;
-  /** A passing line: a picture too big to send, someone on another version. */
-  note: string;
-  /** A guest that has heard nothing from the host for a while. */
-  stuck: boolean;
-  /** Who is connected. */
-  peers: Person[];
-  /** Remove someone: offered to the host from the list of who is connected. */
-  onKick: (id: string) => void;
-  saving: boolean;
-  onHost: () => void;
-  onJoin: () => void;
-  onStop: () => void;
-  onRejoin: () => void;
-}) {
-  const [copied, setCopied] = useState(false);
-  const [people, setPeople] = useState<{ x: number; y: number } | null>(null);
-  const status = <>
-    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: !peers.length || peers.some((p) => (p.ms ?? 0) > SLOW_MS) ? "rgb(var(--tone-amber-400))" : "rgb(var(--tone-green-400))" }} />
-    {stuck && !peers.length ? "Can't reach the board: check the code, or your network"
-      : waiting ? `Waiting for ${hostName} to let you in…`
-      : <>{share?.host ? "Sharing" : "Joined"}{!canEdit ? " · view only" : ""} · {peers.length ? `with ${peers.map((p) => (p.ms === undefined ? p.name : `${p.name} · ${p.ms} ms`)).join(", ")}` : share?.host ? "waiting for someone" : "connecting…"}</>}
-  </>;
+/**
+ * Who else has a shared board open, top right: an avatar each with the round trip under it, amber
+ * when slow. Past three the rest fold into "+N", its badge the slowest of them; any avatar opens the
+ * full list. Excalidraw's own avatars are hidden for these (see the CSS), as they cannot show it.
+ */
+function Viewers({ here }: { here: Viewer[] }) {
+  const [list, setList] = useState(false);
+  const shown = here.length > MAX_AVATARS + 1 ? here.slice(0, MAX_AVATARS) : here;
+  const rest = here.slice(shown.length);
+  const slowest = rest.reduce<number | undefined>((m, v) => (v.ms === undefined ? m : Math.max(m ?? 0, v.ms)), undefined);
+  const badge = (ms?: number) => <span className={"deck-viewer-ms" + (ms !== undefined && ms > SLOW_MS ? " slow" : "")}>{msText(ms)}</span>;
   return (
-    <div className="deck-share-row">
-      {!share && offer ? (
-        <div className="deck-share">
-          <button onClick={onResume} title={offer.host ? "Share this board again, same code" : "Join that board again, same code"}>
-            {offer.host ? <Share2 /> : <LogIn />} {offer.host ? "Resume sharing" : "Rejoin"} <span className="font-mono">{offer.code}</span>
+    <div className="deck-viewers">
+      {shown.map((v) => {
+        const [bg, fg] = avatarColor(v.id);
+        return (
+          <button key={v.id} className="deck-viewer" title={v.name} aria-label={`${v.name}, ${msText(v.ms)}`} onClick={() => setList((x) => !x)}>
+            <span className="deck-viewer-dot" style={{ background: bg, color: fg }}>{(v.name.trim()[0] ?? "?").toUpperCase()}</span>
+            {badge(v.ms)}
           </button>
-          <button onClick={onDismissOffer} title="Forget it">✕</button>
-        </div>
-      ) : !share ? (
-        <div className="deck-share">
-          <button onClick={onHost} title="Let someone else draw on this board with you"><Share2 /> Share</button>
-          <button onClick={onJoin} title="Open a board someone shared with you"><LogIn /> Join</button>
-        </div>
-      ) : (
-        <div className="deck-share">
-          {/* The host clicks this for who may draw, and to remove someone. */}
-          {share.host ? (
-            <button title="Who may draw, who is here" onClick={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              setPeople({ x: r.left, y: r.top - 8 });
-            }}>{status}</button>
-          ) : <span className="deck-share-text">{status}</span>}
-          {share.host && (
-            <button className="font-mono" title="Copy the code"
-              onClick={() => { void navigator.clipboard.writeText(share.code).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }, () => {}); }}>
-              {share.code} {copied ? <Check /> : <Copy />}
-            </button>
-          )}
-          {stuck && !share.host && <button onClick={onRejoin} title="Try connecting again">Rejoin</button>}
-          <button onClick={onStop}>{share.host ? "Stop" : "Leave"}</button>
-        </div>
+        );
+      })}
+      {rest.length > 0 && (
+        <button className="deck-viewer" title={rest.map((v) => v.name).join(", ")} aria-label={`${rest.length} more`} onClick={() => setList((x) => !x)}>
+          <span className="deck-viewer-dot" style={{ background: "var(--bg-hover)", color: "var(--text-primary)", fontSize: 11 }}>+{rest.length}</span>
+          {badge(slowest)}
+        </button>
       )}
-      {/* Someone with the code asking to come in: the host lets them in, or not. */}
-      {share?.host && knocking.map((p) => (
-        <div key={p.id} className="deck-share deck-knock">
-          <span className="deck-share-text"><UserPlus /> {p.name} wants to join</span>
-          <button onClick={() => onAllow(p.id)} title={`Let ${p.name} onto the board`}>Let in</button>
-          <button onClick={() => onDeny(p.id)} title={`Turn ${p.name} away`}>✕</button>
+      {list && (
+        <div className="deck-viewer-list" onMouseLeave={() => setList(false)}>
+          <div className="deck-viewer-row" style={{ color: "var(--text-muted)", fontSize: 11 }}>On this board</div>
+          {here.map((v) => {
+            const [bg, fg] = avatarColor(v.id);
+            return (
+              <div key={v.id} className="deck-viewer-row">
+                <span className="deck-viewer-dot" style={{ width: 22, height: 22, fontSize: 10, background: bg, color: fg }}>{(v.name.trim()[0] ?? "?").toUpperCase()}</span>
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</span>
+                {badge(v.ms)}
+              </div>
+            );
+          })}
         </div>
-      ))}
-      {note && <span className="text-[11px] text-text-muted">{note}</span>}
-      {saving && <span className="text-[11px] text-text-muted">Saving…</span>}
-      {people && (
-        <ContextMenu x={people.x} y={people.y} up onClose={() => setPeople(null)}
-          items={[
-            // Settings rows (checked): the menu stays open while they are flipped.
-            // One tick for the default: on, everyone may draw; off, everyone only views.
-            { label: "Others can edit", checked: roles.def === "edit", onClick: () => onDefault(roles.def === "edit" ? "view" : "edit") },
-            ...peers.flatMap((p): MenuEntry[] => {
-              const edits = (roles.per[p.id] ?? roles.def) === "edit";
-              const flip: Mode = edits ? "view" : "edit";
-              return ["sep",
-                // Back to the default rather than a choice that only repeats it.
-                { label: `${p.name} can edit`, checked: edits, onClick: () => onPerson(p.id, flip === roles.def ? null : flip) },
-                { label: `Remove ${p.name}`, icon: UserX, danger: true, onClick: () => onKick(p.id) }];
-            }),
-          ]} />
       )}
     </div>
   );
 }
 
 /**
- * The choice at the end of hosting: keep what was drawn together, go back to the board as it was
- * before sharing, or both (the shared version becomes a board of its own).
+ * The footer's share control. A project board: Share, with the teams to share it with for good. A
+ * board shared with a team: whose it is and who else has it open, so it is plain it is live.
  */
-function ShareEndDialog({ leftover, onChoose, onCancel }: {
-  leftover: boolean;
-  onChoose: (choice: "keep" | "restore" | "both") => void;
-  onCancel: () => void;
+function TeamBar({ teams, team, saving, onShare }: {
+  teams: { id: string; name: string }[]; team: string; saving: boolean; onShare: (team: string) => void;
 }) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className="w-[380px] rounded-xl border border-subtle p-4 shadow-2xl" style={{ background: "var(--bg-card)" }}>
-        <div className={DIALOG_TITLE}>
-          {leftover ? "This board was shared" : "Stop sharing"}
-        </div>
-        <p className={DIALOG_BODY}>
-          {leftover
-            ? "A copy of how it looked before sharing was kept. What do you want to keep?"
-            : "A copy of how this board looked before sharing was kept. What do you want to keep?"}
-        </p>
-        <div className="flex flex-col gap-1.5">
-          <button className={CHOICE} onClick={() => onChoose("keep")}>
-            <span className="text-[12.5px] text-text-primary">Keep the changes</span>
-            <span className="text-[11px] text-text-muted">The board stays as it is now; the copy is thrown away.</span>
+    <div className="deck-share-row">
+      <div className="deck-share">
+        {team ? (
+          <span className="deck-share-text" title="Kept in step with every member of the team">
+            <Users /> Shared with {team}
+          </span>
+        ) : (
+          <button onClick={(e) => setMenu({ x: e.clientX, y: e.clientY })}
+            title={teams.length ? "Share this board with a Deck team, for good" : "Start or join a team in Settings > Teams first"}>
+            <Share2 /> Share
           </button>
-          <button className={CHOICE} onClick={() => onChoose("restore")}>
-            <span className="text-[12.5px] text-text-primary">Go back to before sharing</span>
-            <span className="text-[11px] text-text-muted">Everything drawn while shared is discarded.</span>
-          </button>
-          <button className={CHOICE} onClick={() => onChoose("both")}>
-            <span className="text-[12.5px] text-text-primary">Keep both</span>
-            <span className="text-[11px] text-text-muted">This board goes back; the shared version becomes a new board beside it.</span>
-          </button>
-        </div>
-        <div className="mt-3 flex justify-end">
-          <button className="rounded-lg px-3 py-1.5 text-xs text-text-muted transition-colors hover:text-text-primary" onClick={onCancel}>
-            {leftover ? "Decide later" : "Keep sharing"}
-          </button>
-        </div>
+        )}
       </div>
+      {saving && <span className="text-[11px] text-text-muted">Saving…</span>}
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={teams.length
+          ? teams.map((t): MenuEntry => ({ label: `Share with ${t.name}`, icon: Users, onClick: () => onShare(t.id) }))
+          : [{ label: "Start or join a team in Settings > Teams first", disabled: true, onClick: () => {} }]} />
+      )}
     </div>
   );
 }
-
-/** On a guest, once the host has stopped sharing or disappeared: keep a copy, or close. */
-function HostGoneDialog({ why, host, onKeep, onClose, onRejoin }: {
-  why: "ended" | "lost" | "removed" | "denied" | "version";
-  host: string;
-  onKeep: () => void;
-  onClose: () => void;
-  /** Offered when the connection dropped: the host may still be sharing. */
-  onRejoin: () => void;
-}) {
-  return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40">
-      <div className="w-[380px] rounded-xl border border-subtle p-4 shadow-2xl" style={{ background: "var(--bg-card)" }}>
-        <div className={DIALOG_TITLE}>
-          {why === "ended" ? `${host} stopped sharing` : why === "removed" ? `${host} removed you from the board`
-            : why === "denied" ? `${host} didn't let you in`
-            : why === "version" ? `${host} has a different Canvas version` : `Lost the connection to ${host}`}
-        </div>
-        <p className={DIALOG_BODY}>
-          {why === "version"
-            ? "Both of you need the same Canvas build to share a board. Update Canvas, then join again."
-            : why === "denied" ? "Ask them to share again if that was a mistake."
-            : `The board stays with ${host}. You can keep what you see as a board of your own.`}
-        </p>
-        <div className="flex flex-col gap-1.5">
-          {why === "lost" && (
-            <button className={CHOICE} onClick={onRejoin}>
-              <span className="text-[12.5px] text-text-primary">Rejoin</span>
-              <span className="text-[11px] text-text-muted">Connect to {host}'s board again, if they are still sharing.</span>
-            </button>
-          )}
-          {why !== "denied" && <button className={CHOICE} onClick={onKeep}>
-            <span className="text-[12.5px] text-text-primary">Keep a copy</span>
-            <span className="text-[11px] text-text-muted">Saved as a new board here, "{host}'s board".</span>
-          </button>}
-          <button className={CHOICE} onClick={onClose}>
-            <span className="text-[12.5px] text-text-primary">Close</span>
-            <span className="text-[11px] text-text-muted">Back to your own boards.</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Not sharing: nothing to subscribe to, and one unchanging view. A new object on each read would
-// look like a change to useSyncExternalStore every time, and render without end.
-const noSubscribe = () => () => {};
-const NO_VIEW: LiveView = { peers: [], knocking: [], waiting: false, stuck: false, gone: null, hostName: "the host", note: "", roles: { def: "edit", per: {} }, canEdit: true };
-const noView = () => NO_VIEW;

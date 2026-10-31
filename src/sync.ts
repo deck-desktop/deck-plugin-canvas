@@ -1,4 +1,4 @@
-// What a shared board sends, as pure functions so the check can run them without a network.
+// What a board shared with a team sends (teamboards.ts), as pure functions so the check can run them without a network.
 //
 // Every Excalidraw element carries a `version` that goes up on each edit, and Excalidraw's own
 // reconcileElements merges two copies by it. So each side only needs to remember, per element,
@@ -29,38 +29,6 @@ export function takeChanged<T extends Versioned>(elements: readonly T[], seen: S
   return out;
 }
 
-/**
- * Canvas's share protocol version, said in every hello (Deck's share layer compares it). Decks on
- * different versions do not share a board: one would half-understand the other. 5: sharing moved
- * into Deck, with the host letting each person in instead of a password.
- */
-export const SHARE_VERSION = 5;
-
-/**
- * A pencil stroke being drawn, cut down to the points added since `from`: what goes out while the
- * pen is down, instead of the whole stroke again on every send. `_from` marks it as a tail.
- */
-export interface Stroke { id: string; points: unknown[]; pressures?: unknown[] }
-export function strokeTail<T extends Stroke>(el: T, from: number): T & { _from: number } {
-  return { ...el, points: el.points.slice(from), pressures: el.pressures?.slice(from), _from: from };
-}
-
-/**
- * A received tail put back together with the stroke as this side already has it. Null when this
- * side is missing points before the tail (a lost message): the tail is then skipped, and the
- * whole stroke, sent when the pen lifts, fills it in.
- */
-export function joinStroke<T extends Stroke & { _from?: number }>(tail: T, have: Stroke | undefined): T | null {
-  if (tail._from === undefined) return tail;
-  if (!have || have.points.length < tail._from) return null;
-  const { _from, ...rest } = tail;
-  return {
-    ...rest,
-    points: have.points.slice(0, _from).concat(tail.points),
-    pressures: tail.pressures && (have.pressures ?? []).slice(0, _from).concat(tail.pressures),
-  } as T;
-}
-
 /** The parts of a picture and of an image element this file reads. */
 export interface FileLike { id: string; dataURL: string }
 export interface ImageRef { type?: string; fileId?: string | null; isDeleted?: boolean }
@@ -84,3 +52,25 @@ export function takeNewFiles<F extends FileLike>(
   }
   return { send, tooBig };
 }
+
+// ---- what crosses to and from another Deck (the security review's H1 and M6) ----
+//
+// A board's buttons are embeddable elements with a deck:// link that runs a command, a script or
+// opens a file on this machine; another embeddable shows a web page inside Deck. Neither may come
+// from someone else: a teammate's button would run their command here at a click, and their
+// embedded page would be a site of their choosing drawn inside Deck. So those never arrive, and
+// this Deck's own never leave (its commands are this machine's business). An ordinary element's
+// link arrives only when it is a web or mail address, which opens in the browser as any link does.
+
+/** Element types that embed something live rather than draw it. */
+const EMBEDS = new Set(["embeddable", "iframe"]);
+const SAFE_LINK = /^(https?:|mailto:)/i;
+
+/** An element as this Deck takes it from another: none that embeds, and only a web or mail link. */
+export function fromPeer<T extends { type?: string; link?: string | null }>(el: T): T | null {
+  if (!el || typeof el !== "object" || EMBEDS.has(String(el.type))) return null;
+  return el.link && !SAFE_LINK.test(String(el.link).trim()) ? { ...el, link: null } : el;
+}
+
+/** The elements this Deck sends: its buttons and embedded pages stay here. */
+export const forPeers = <T extends { type?: string }>(els: readonly T[]): T[] => els.filter((e) => !EMBEDS.has(String(e.type)));
