@@ -90,7 +90,7 @@ const DECK_THEME = `
 .deck-canvas .deck-share > button svg, .deck-canvas .deck-share-text svg { width: var(--lg-icon-size); height: var(--lg-icon-size); }
 .deck-canvas .deck-share > .deck-share-text { display: flex; align-items: center; gap: .5rem; padding: 0 .75rem; color: var(--color-gray-50, inherit); white-space: nowrap; }
 /* On a shared board our avatars (Viewers) stand in for Excalidraw's, which cannot show a round trip. */
-.deck-canvas .UserList-Wrapper { display: none; }
+.deck-canvas .UserList, .deck-canvas .UserList-Wrapper { display: none; }
 .deck-canvas .deck-viewers { display: flex; gap: 6px; align-items: flex-start; margin-inline-end: 4px; position: relative; }
 .deck-canvas .deck-viewer { display: flex; flex-direction: column; align-items: center; gap: 3px; border: 0; padding: 0; background: none; cursor: pointer; font: inherit; }
 .deck-canvas .deck-viewer-dot { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; }
