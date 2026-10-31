@@ -23,6 +23,7 @@ import excalidrawCss from "@excalidraw/excalidraw/index.css";
 import { TerminalSquare, FileCog, ExternalLink, Loader2, Share2, LogIn, Copy, Pencil, Trash2, UserX, UserPlus, Grid3x3, Magnet, Users } from "lucide-react";
 import { newShareId, subscribeTeams, teamsView, type Mode, type Person, type Roles } from "../shim/p2p.js";
 import { startTeamInvites, stopTeamInvites, takeJoin } from "./teaminvite";
+import { attachBoard, boardChanged, deleteTeamBoard, renameTeamBoard, shareAlways, startTeamBoards, stopTeamBoards, subscribeTeamBoards, teamBoardKey, teamBoards, teamBoardsVersion } from "./teamboards";
 import { LiveShare, type LiveView, type Share } from "./live";
 
 import {
@@ -100,11 +101,14 @@ const style = document.createElement("style");
 style.dataset.plugin = "canvas";
 style.textContent = excalidrawCss + DECK_THEME;
 document.head.appendChild(style);
-// Team invites reach this Deck with the Canvas tab closed too.
+// Team invites reach this Deck with the Canvas tab closed too, and boards always shared with a
+// team keep in step (teamboards.ts).
 startTeamInvites();
+void startTeamBoards().catch((e) => console.warn("[canvas] starting the team boards failed", e));
 
 export function dispose() {
   stopTeamInvites();
+  stopTeamBoards();
   style.remove();
   // A reload re-imports the plugin: the old copy's shares end here rather than run on unseen.
   for (const l of lives.values()) void l.close();
@@ -128,6 +132,8 @@ const boardsKey = (project: string) => `${project}-boards`;
 const sceneKey = (project: string, id: string) => (id ? `${project}_${id}` : project);
 const DEFAULT_BOARDS: BoardRef[] = [{ id: "", name: "Board" }];
 const newId = () => Math.random().toString(36).slice(2, 10);
+/** A board always shared with a team is a tab id `team:<id>` (teamboards.ts), beside the project's own. */
+const teamOf = (tab: string) => (tab.startsWith("team:") ? tab.slice(5) : null);
 
 /** Which board was open in each project, kept across mounts, like Notes does for its notes. */
 const lastBoard = new Map<string, string>();
@@ -224,6 +230,10 @@ export function PaneView({ cwd, runInTerminal }: {
     setShare({ ...again, attempt: (again.attempt ?? 0) + 1 });
   };
   const teams = useSyncExternalStore(subscribeTeams, teamsView);
+  useSyncExternalStore(subscribeTeamBoards, teamBoardsVersion);
+  const shared = teamBoards();
+  const tActive = teamOf(active);
+  const activeKey = tActive ? teamBoardKey(tActive) : sceneKey(project, active);
   // A teammate's invite, joined from its notification: taken now if Canvas is open, else on mount.
   useEffect(() => {
     const take = () => {
@@ -246,7 +256,7 @@ export function PaneView({ cwd, runInTerminal }: {
       const list: BoardRef[] = t.trim() ? JSON.parse(t) : DEFAULT_BOARDS;
       const want = lastBoard.get(project);
       setBoards(list.length ? list : DEFAULT_BOARDS);
-      setActive(want !== undefined && list.some((b) => b.id === want) ? want : list[0]?.id ?? "");
+      setActive(want !== undefined && (list.some((b) => b.id === want) || teamOf(want)) ? want : list[0]?.id ?? "");
     }).catch((e) => { console.warn("[canvas] boards load failed", e); if (alive) { setBoards(DEFAULT_BOARDS); setActive(""); } });
     return () => { alive = false; };
   }, [project]);
@@ -277,6 +287,12 @@ export function PaneView({ cwd, runInTerminal }: {
   };
 
   const remove = (id: string) => {
+    const t = teamOf(id), tb = t && shared.find((x) => x.id === t);
+    if (tb) {
+      setConfirm({ title: `Delete "${tb.name}" for the team?`, body: "It goes from every member's Deck, as they come online.", confirmLabel: "Delete",
+        onConfirm: () => { void deleteTeamBoard(tb.id); if (id === active) open(boards[0]?.id ?? ""); } });
+      return;
+    }
     const b = boards.find((x) => x.id === id);
     if (!b) return;
     setConfirm({
@@ -321,20 +337,55 @@ export function PaneView({ cwd, runInTerminal }: {
 
   // From what is saved, so a stroke drawn in the last moment (the save waits 800ms) can be missing.
   const duplicate = async (id: string) => {
-    const b = boards.find((x) => x.id === id);
+    const t = teamOf(id);
+    const b = t ? shared.find((x) => x.id === t) : boards.find((x) => x.id === id);
     if (!b) return;
-    const key = sceneKey(project, id);
+    const key = t ? teamBoardKey(t) : sceneKey(project, id);
     const [scene, files] = await Promise.all([configRead(key).catch((e) => { console.warn("[canvas] board read failed", e); return ""; }), configRead(filesKey(key)).catch((e) => { console.warn("[canvas] board read failed", e); return ""; })]);
     open((await addCopy(`${b.name} copy`, scene, files, id)).id);
   };
 
   const rename = (id: string) => {
+    const t = teamOf(id), tb = t && shared.find((x) => x.id === t);
+    if (tb) {
+      setRenaming({ title: "Rename shared board", initial: tb.name, confirmLabel: "Rename", onSave: (to) => { if (to.trim()) void renameTeamBoard(tb.id, to.trim()); } });
+      return;
+    }
     const b = boards.find((x) => x.id === id);
     if (!b) return;
     setRenaming({
       title: "Rename board", initial: b.name, confirmLabel: "Rename",
       onSave: (to) => { if (to.trim()) save(boards.map((x) => (x.id === id ? { ...x, name: to.trim() } : x))); },
     });
+  };
+
+  /** A project board, moved to be always shared with a team: it leaves this project's tabs. */
+  const shareWith = async (id: string, team: string) => {
+    const b = boards.find((x) => x.id === id);
+    if (!b) return;
+    const key = sceneKey(project, id);
+    const [scene, files] = await Promise.all([configRead(key).catch(() => ""), configRead(filesKey(key)).catch(() => "")]);
+    const tb = await shareAlways(b.name, team, scene, files).catch((e) => { console.warn("[canvas] sharing a board with the team failed", e); return null; });
+    if (!tb) return;
+    // The drawing now lives under the shared board's keys: the project's copy goes, or a project's
+    // only board (id "", which comes back as the empty first board) would still hold it.
+    for (const k of [key, filesKey(key), backupKey(key)]) void configWrite(k, "").catch((e) => console.warn("[canvas] clearing a board moved to the team failed", e));
+    const rest = boards.filter((x) => x.id !== id);
+    save(rest.length ? rest : DEFAULT_BOARDS);
+    open(`team:${tb.id}`);
+  };
+  /** A shared board back into this project: a copy here, and the board goes from the team. */
+  const stopSharing = (id: string) => {
+    const t = teamOf(id), tb = t && shared.find((x) => x.id === t);
+    if (!tb) return;
+    setConfirm({ title: `Stop sharing "${tb.name}"?`, confirmLabel: "Stop sharing", danger: false,
+      body: "A copy stays in this project's boards; the board goes from the others' Decks.",
+      onConfirm: () => void (async () => {
+        const [scene, files] = await Promise.all([configRead(teamBoardKey(tb.id)).catch(() => ""), configRead(filesKey(teamBoardKey(tb.id))).catch(() => "")]);
+        const copy = await addCopy(tb.name, scene, files, boards[boards.length - 1]?.id ?? "");
+        await deleteTeamBoard(tb.id);
+        open(copy.id);
+      })() });
   };
 
   return (
@@ -347,12 +398,14 @@ export function PaneView({ cwd, runInTerminal }: {
         setTabMenu({ x: e.clientX, y: e.clientY, id });
       }}>
       <TabStrip chip
-        tabs={boards.map((b) => ({ id: b.id, title: b.name, closeTitle: "Delete board" }))}
+        tabs={[...boards.map((b) => ({ id: b.id, title: b.name, closeTitle: "Delete board" })),
+          ...shared.map((b) => ({ id: `team:${b.id}`, title: b.name, icon: <Users size={12} />, closeTitle: "Delete for the team" }))]}
         activeId={active}
         onSelect={open}
         onClose={remove}
         onDoubleClick={rename}
         onReorder={(from, to) => {
+          if (teamOf(from) || teamOf(to)) return;
           const next = boards.filter((b) => b.id !== from);
           next.splice(boards.findIndex((b) => b.id === to), 0, boards.find((b) => b.id === from)!);
           save(next);
@@ -364,16 +417,19 @@ export function PaneView({ cwd, runInTerminal }: {
         <ContextMenu x={tabMenu.x} y={tabMenu.y} onClose={() => setTabMenu(null)} items={[
           { label: "Rename", icon: Pencil, onClick: () => rename(tabMenu.id) },
           { label: "Duplicate", icon: Copy, onClick: () => void duplicate(tabMenu.id) },
+          ...(teamOf(tabMenu.id)
+            ? [{ label: "Stop sharing with the team", icon: Users, onClick: () => stopSharing(tabMenu.id) }]
+            : teams.map((t) => ({ label: `Always share with ${t.name}`, icon: Users, onClick: () => void shareWith(tabMenu.id, t.id) }))),
           "sep",
           { label: "Delete", icon: Trash2, danger: true, onClick: () => remove(tabMenu.id) },
         ]} />
       )}
       {/* Keyed by board: Excalidraw reads initialData only when it mounts. A guest gets a board of
           its own, which starts empty and fills from the host. */}
-      <Board key={share && !share.host ? `shared:${share.code}` : `${sceneKey(project, active)}#${reload}`}
-        storeKey={sceneKey(project, active)} runInTerminal={runInTerminal}
+      <Board key={share && !share.host ? `shared:${share.code}` : `${activeKey}#${reload}`}
+        storeKey={activeKey} teamBoard={tActive ?? undefined} runInTerminal={runInTerminal}
         share={share}
-        boardName={boards.find((b) => b.id === active)?.name ?? "Board"}
+        boardName={(tActive ? shared.find((b) => b.id === tActive)?.name : boards.find((b) => b.id === active)?.name) ?? "Board"}
         onReload={() => setReload((n) => n + 1)}
         onSaveCopy={(name, scene, files) => addCopy(name, scene, files, active).then(() => {})}
         teams={teams.map((t) => ({ id: t.id, name: t.name, members: t.members.filter((m) => !m.me).map((m) => ({ id: m.id, name: m.name, online: m.online })) }))}
@@ -430,8 +486,10 @@ function isLight(hex: string): boolean {
   return 0.2126 * lin(m[1]) + 0.7152 * lin(m[2]) + 0.0722 * lin(m[3]) > 0.4;
 }
 
-function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName, onReload, onSaveCopy, teams, onTeam, onStop, onRejoin, offer, onResume, onDismissOffer, project }: {
+function Board({ storeKey: key, teamBoard, runInTerminal: onRunInTerminal, share, boardName, onReload, onSaveCopy, teams, onTeam, onStop, onRejoin, offer, onResume, onDismissOffer, project }: {
   storeKey: string;
+  /** Set for a board always shared with a team (teamboards.ts): its id there. */
+  teamBoard?: string;
   /** The project, which the live share is kept under. */
   project: string;
   runInTerminal: (label: string, command: string) => void;
@@ -490,6 +548,9 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
   // The scene waiting on the debounce, so leaving the board (switching tab, closing the pane)
   // writes it at once instead of dropping the last stroke.
   const pending = useRef<string | null>(null);
+  // A board always shared with a team is attached to it while on screen (teamboards.ts).
+  const detachTeam = useRef<(() => void) | null>(null);
+  useEffect(() => () => { detachTeam.current?.(); detachTeam.current = null; }, [key]);
   useEffect(() => () => {
     clearTimeout(saveTimer.current);
     if (pending.current !== null) void configWrite(key, pending.current).catch((e) => console.warn("[canvas] board save failed", e));
@@ -662,6 +723,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
       l.queueSend();
     }
     if (guest) return;
+    if (teamBoard) boardChanged(teamBoard);
     // A new picture: write the pictures file, once. Excalidraw's `files` holds every picture the
     // board has loaded, so this keeps one a deleted element still points at, for undo.
     const ids = Object.keys(files ?? {});
@@ -722,7 +784,7 @@ function Board({ storeKey: key, runInTerminal: onRunInTerminal, share, boardName
         // share buttons are drawn for one or the other, and the dark set was pale on a light page.
         theme={light ? "light" : "dark"}
         onChange={onChange}
-        onExcalidrawAPI={(api: any) => { apiRef.current = api; liveRef.current?.attach(api); if (api) requestAnimationFrame(() => placeGrid(apiRef.current?.getAppState())); }}
+        onExcalidrawAPI={(api: any) => { apiRef.current = api; liveRef.current?.attach(api); detachTeam.current?.(); detachTeam.current = api && teamBoard ? attachBoard(teamBoard, api) : null; if (api) requestAnimationFrame(() => placeGrid(apiRef.current?.getAppState())); }}
         // Snapping is Excalidraw's grid mode, which also draws its own grid: so it is on only
         // while both the grid and snapping are, and our grid steps aside while it is.
         gridModeEnabled={grid.show && grid.snap}

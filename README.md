@@ -22,6 +22,14 @@ do not sync.
 
 ## Drawing together
 
+**Always shared with a team**: right-click a board's tab and choose **Always share with** *team*.
+The board moves out of the project and shows, with a team icon, in every project's boards on every
+member's Deck, with no invite and no host. Each member keeps a copy; whenever two of you are online
+together the copies are brought in step, shape by shape, and a board open on both follows along as
+it is drawn. Rename it and the others see the new name; **Delete** removes it for everyone, and
+**Stop sharing with the team** keeps a copy in this project and removes it for the others. Buttons
+that run something here, and embedded web pages, are never shared.
+
 **Share** (bottom of a board) lets the people in your Deck team draw on it with you, live, from
 their own Deck. Start or join a team in Deck's Settings > Teams first. There is no server of yours
 involved: the Decks connect directly, and find each other through public Nostr relays that only

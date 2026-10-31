@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Boards always shared with a Deck team: "Always share with" a team on a board's tab, and it shows
+  in every member's Canvas, kept in step whenever members are online together, with no invite.
+  Share's one-off invite stays beside it.
+
 - Excalidraw's translations other than English are left out by a setting in package.json rather
   than a deck-plugin.config.mjs, so the registry can rebuild and type-check it. Nothing changes in
   the plugin itself.
