@@ -25,7 +25,7 @@ do not sync.
 Boards are shared with a Deck team (start or join one in Deck's Settings > Teams first), and once
 shared they stay shared: there is no invite to send and no host to wait for.
 
-- **Share** (bottom of a board), or right-click its tab: **Always share with** *team*. The board
+- **Share** (bottom of a board), or right-click its tab: **Share with** *team*. The board
   moves out of the project and shows, with a team icon, in every project's boards on every
   member's Deck.
 - Each member keeps a copy. Whenever two of you are online together the copies are brought in

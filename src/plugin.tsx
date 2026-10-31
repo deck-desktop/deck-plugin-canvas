@@ -353,7 +353,7 @@ export function PaneView({ cwd, runInTerminal }: {
           { label: "Duplicate", icon: Copy, onClick: () => void duplicate(tabMenu.id) },
           ...(teamOf(tabMenu.id)
             ? (canManage(teamOf(tabMenu.id)!) ? [{ label: "Stop sharing with the team", icon: Users, onClick: () => stopSharing(tabMenu.id) }] : [])
-            : teams.map((t) => ({ label: `Always share with ${t.name}`, icon: Users, onClick: () => void shareWith(tabMenu.id, t.id) }))),
+            : teams.map((t) => ({ label: `Share with ${t.name}`, icon: Users, onClick: () => void shareWith(tabMenu.id, t.id) }))),
           ...(!teamOf(tabMenu.id) || canManage(teamOf(tabMenu.id)!) ? ["sep" as const, { label: "Delete", icon: Trash2, danger: true, onClick: () => remove(tabMenu.id) }] : []),
         ]} />
       )}
@@ -743,7 +743,7 @@ function TeamBar({ teams, team, saving, onShare }: {
       {saving && <span className="text-[11px] text-text-muted">Saving…</span>}
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={teams.length
-          ? teams.map((t): MenuEntry => ({ label: `Always share with ${t.name}`, icon: Users, onClick: () => onShare(t.id) }))
+          ? teams.map((t): MenuEntry => ({ label: `Share with ${t.name}`, icon: Users, onClick: () => onShare(t.id) }))
           : [{ label: "Start or join a team in Settings > Teams first", disabled: true, onClick: () => {} }]} />
       )}
     </div>
