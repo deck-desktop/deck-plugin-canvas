@@ -13,7 +13,7 @@ import { build } from "esbuild";
 const dir = mkdtempSync(join(tmpdir(), "deck-canvas-sync-"));
 const out = join(dir, "sync.mjs");
 await build({ entryPoints: [join(import.meta.dirname, "sync.ts")], outfile: out, format: "esm", bundle: false });
-const { markSeen, takeChanged, takeNewFiles, SHARE_VERSION, strokeTail, joinStroke } = await import(`file://${out}`);
+const { markSeen, takeChanged, takeNewFiles, SHARE_VERSION, strokeTail, joinStroke, fromPeer, forPeers } = await import(`file://${out}`);
 rmSync(dir, { recursive: true, force: true });
 
 const el = (id, version, extra = {}) => ({ id, version, ...extra });
@@ -81,5 +81,17 @@ assert.equal(joinStroke(tail, undefined), null);
 assert.equal(joinStroke(stroke, undefined), stroke);
 // A stroke without pressures (a mouse) stays without.
 assert.equal(joinStroke(strokeTail({ id: "m", points: [[0, 0], [1, 1]] }, 1), { id: "m", points: [[0, 0]] }).pressures, undefined);
+
+
+// Another Deck's buttons and embedded pages never arrive (H1, M6); a link only as a web or mail address.
+assert.equal(fromPeer({ id: "b", type: "embeddable", link: "deck://term/rm%20-rf%20~" }), null);
+assert.equal(fromPeer({ id: "w", type: "embeddable", link: "https://evil.example" }), null);
+assert.equal(fromPeer({ id: "i", type: "iframe" }), null);
+assert.equal(fromPeer({ id: "r", type: "rectangle", link: "deck://script/x" }).link, null);
+assert.equal(fromPeer({ id: "r", type: "rectangle", link: "javascript:alert(1)" }).link, null);
+assert.equal(fromPeer({ id: "r", type: "rectangle", link: "https://ok.example" }).link, "https://ok.example");
+assert.deepEqual(fromPeer({ id: "t", type: "text" }), { id: "t", type: "text" });
+// This Deck's own buttons and embeds stay here.
+assert.deepEqual(forPeers([{ id: "a", type: "rectangle" }, { id: "b", type: "embeddable" }, { id: "c", type: "iframe" }]).map((e) => e.id), ["a"]);
 
 console.log("canvas sync ok");

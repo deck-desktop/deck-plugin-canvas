@@ -17,7 +17,7 @@ import { configWrite } from "../shim/bridge.js";
 import { notify, dismissNotification } from "../shim/ui.js";
 import { type Json, type Mode, type P2pShare, type ShareView } from "../shim/p2p.js";
 import { hostShare, joinShare } from "./teaminvite";
-import { joinStroke, markSeen, strokeTail, takeChanged, takeNewFiles, SHARE_VERSION, type Seen } from "./sync";
+import { forPeers, fromPeer, joinStroke, markSeen, strokeTail, takeChanged, takeNewFiles, SHARE_VERSION, type Seen } from "./sync";
 
 /** A share: the room's code, which side this Deck is, its name. */
 export interface Share {
@@ -236,7 +236,7 @@ export class LiveShare {
     }
     if (out.length) {
       this.inFlight = true;
-      void this.s.send({ t: "update", elements: out }).finally(() => { this.inFlight = false; });
+      void this.s.send({ t: "update", elements: forPeers(out) }).finally(() => { this.inFlight = false; });
     }
     const { send, tooBig } = takeNewFiles(api.getFiles() ?? {}, api.getSceneElements(), this.filesDone, MAX_PICTURE);
     // One message each: a picture can be megabytes, and Trystero splits a message into chunks
@@ -264,7 +264,7 @@ export class LiveShare {
     const v = getSceneVersion(all);
     if (v === this.fullSynced) return;
     this.fullSynced = v;
-    void this.s.send({ t: "update", elements: all });
+    void this.s.send({ t: "update", elements: forPeers(all) });
   }
 
   // ---- Receiving ----
@@ -281,7 +281,9 @@ export class LiveShare {
       // A stroke's tail is joined to the stroke as this side has it; one that cannot be (a tail
       // before it was lost) is skipped, and the whole stroke follows when the pen lifts.
       const have = new Map(this.elements().map((e: any) => [e.id, e]));
-      const remote = (msg.elements as any[]).map((e) => joinStroke(e, have.get(e.id) as any)).filter(Boolean) as any[];
+      if (!Array.isArray(msg.elements)) return;
+      // Nothing that embeds or links into this Deck (sync.ts fromPeer).
+      const remote = (msg.elements as any[]).map((e) => fromPeer(e)).filter(Boolean).map((e) => joinStroke(e, have.get(e.id) as any)).filter(Boolean) as any[];
       // Recorded before the scene changes, so the change event this fires sends none of it back.
       markSeen(remote, this.seen);
       this.apply(remote, msg.t === "scene");
@@ -294,7 +296,7 @@ export class LiveShare {
 
   /** The board and its pictures, to someone just let in. */
   private welcome(peer: string) {
-    void this.s.send({ t: "scene", elements: this.elements() }, peer);
+    void this.s.send({ t: "scene", elements: forPeers(this.elements()) }, peer);
     const { send } = takeNewFiles(this.files(), this.liveElements(), new Set(), MAX_PICTURE);
     for (const f of send) void this.s.send({ t: "files", files: [f as any] }, peer);
   }

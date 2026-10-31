@@ -84,3 +84,25 @@ export function takeNewFiles<F extends FileLike>(
   }
   return { send, tooBig };
 }
+
+// ---- what crosses to and from another Deck (the security review's H1 and M6) ----
+//
+// A board's buttons are embeddable elements with a deck:// link that runs a command, a script or
+// opens a file on this machine; another embeddable shows a web page inside Deck. Neither may come
+// from someone else: a teammate's button would run their command here at a click, and their
+// embedded page would be a site of their choosing drawn inside Deck. So those never arrive, and
+// this Deck's own never leave (its commands are this machine's business). An ordinary element's
+// link arrives only when it is a web or mail address, which opens in the browser as any link does.
+
+/** Element types that embed something live rather than draw it. */
+const EMBEDS = new Set(["embeddable", "iframe"]);
+const SAFE_LINK = /^(https?:|mailto:)/i;
+
+/** An element as this Deck takes it from another: none that embeds, and only a web or mail link. */
+export function fromPeer<T extends { type?: string; link?: string | null }>(el: T): T | null {
+  if (!el || typeof el !== "object" || EMBEDS.has(String(el.type))) return null;
+  return el.link && !SAFE_LINK.test(String(el.link).trim()) ? { ...el, link: null } : el;
+}
+
+/** The elements this Deck sends: its buttons and embedded pages stay here. */
+export const forPeers = <T extends { type?: string }>(els: readonly T[]): T[] => els.filter((e) => !EMBEDS.has(String(e.type)));
