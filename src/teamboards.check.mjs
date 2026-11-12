@@ -74,4 +74,10 @@ assert.deepEqual(T.cleanFiles([
   { id: "p3", mimeType: "image/png", dataURL: "https://evil.example/x.png" },
 ]).map((f) => f.id), ["p1"]);
 
+// The catch-up sum: the same elements in any order sum the same; a newer version does not.
+const sumEls = [{ id: "a", version: 1, versionNonce: 5 }, { id: "b", version: 2, versionNonce: 7 }];
+assert.equal(T.sumOf(sumEls), T.sumOf([...sumEls].reverse()));
+assert.notEqual(T.sumOf(sumEls), T.sumOf([sumEls[0], { ...sumEls[1], version: 3 }]));
+assert.notEqual(T.sumOf(sumEls), T.sumOf([sumEls[0]]));
+
 console.log("canvas teamboards ok");
