@@ -31,7 +31,10 @@ type Msg =
   | { t: "ptr"; id: string; x: number; y: number; button: "up" | "down"; tool: "pointer" | "laser" }
   /** A round trip, timed by whoever sent the ping: shown beside each name in the footer. */
   | { t: "ping"; id: string; n: number }
-  | { t: "pong"; id: string; n: number };
+  | { t: "pong"; id: string; n: number }
+  /** Now and then: a sum of each board's elements, so a board that drifted apart (a lost message)
+   *  is sent whole and merged. Older Canvases ignore it. */
+  | { t: "sum"; sums: [string, string][] };
 
 const LIST = "team-boards";
 export const teamBoardKey = (id: string) => `teamboard_${id}`;
@@ -40,6 +43,17 @@ const filesKey = (key: string) => `${key}-files`;
 const MAX_PICTURE = 4 * 1024 * 1024;
 /** How far ahead of this clock a revision may be: a later one would win over every edit for good. */
 const FUTURE = 10 * 60_000;
+/** How often each Deck sends its board list and sums to those online. */
+const CATCH_UP = 2 * 60_000;
+
+/** A short sum of a board's elements (id, version and nonce of each, deleted ones too): two Decks
+ *  with the same elements get the same sum. */
+export function sumOf(elements: { id?: unknown; version?: unknown; versionNonce?: unknown }[]): string {
+  const parts = elements.map((e) => `${e.id}:${e.version}:${e.versionNonce}`).sort();
+  let h = 0x811c9dc5;
+  for (const c of parts.join("|")) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193);
+  return `${parts.length}-${(h >>> 0).toString(36)}`;
+}
 
 // ---- pure: the list, and what may arrive ----
 
@@ -175,6 +189,18 @@ async function hello(team: string, m: Member) {
 async function onMsg(team: string, msg: Msg, from: Member) {
   if (stopped || !msg || typeof msg !== "object") return;
   const ch = chans.get(team);
+  if (msg.t === "sum") {
+    if (!Array.isArray(msg.sums)) return;
+    for (const pair of msg.sums.slice(0, 500)) {
+      if (!Array.isArray(pair) || !validId(pair[0]) || typeof pair[1] !== "string") continue;
+      const b = list.find((x) => x.id === pair[0] && x.team === team && !x.del);
+      if (!b) continue;
+      // Summed as peers see it: what never goes to a peer (forPeers) must not make the sums differ.
+      const mine = forPeers(await elementsOf(b.id));
+      if (sumOf(mine) !== pair[1]) void ch?.send({ t: "els", id: b.id, elements: mine }, from.id);
+    }
+    return;
+  }
   if (msg.t === "list") {
     const r = mergeList(list, msg.boards, team, Date.now(), teamsView().find((t) => t.id === team)?.ownerId);
     if (!r.changed.length) return;
@@ -410,6 +436,19 @@ export async function deleteTeamBoard(id: string) {
 export const teamName = (team: string) => teamsView().find((t) => t.id === team)?.name ?? "the team";
 
 let unTeams: (() => void) | null = null;
+let catchUp: ReturnType<typeof setInterval> | null = null;
+/** What this Deck has, to each member online: the list, and a sum per board. */
+async function catchUpNow() {
+  for (const [team, ch] of chans) {
+    if (!ch.online().length) continue;
+    const mine = list.filter((b) => b.team === team);
+    if (!mine.length) continue;
+    const sums: [string, string][] = [];
+    for (const b of mine) if (!b.del) sums.push([b.id, sumOf(forPeers(await elementsOf(b.id)))]);
+    void ch.send({ t: "list", boards: mine });
+    void ch.send({ t: "sum", sums });
+  }
+}
 export async function startTeamBoards() {
   stopped = false;
   const t = await configRead(LIST).catch(() => "");
@@ -418,6 +457,7 @@ export async function startTeamBoards() {
   try { list = t.trim() ? JSON.parse(t) : []; } catch { list = []; }
   unTeams = subscribeTeams(channels);
   channels();
+  catchUp = setInterval(() => void catchUpNow().catch((e) => console.warn("[canvas] the team boards catch-up failed", e)), CATCH_UP);
   // Who this Deck is, for canManage: only once it is in a team (asking makes an identity).
   if (teamsView().length) void myId().then(emit).catch(() => {});
 }
@@ -429,4 +469,6 @@ export function stopTeamBoards() {
   timers.forEach(clearTimeout); timers.clear();
   if (pingTimer) clearInterval(pingTimer);
   pingTimer = null;
+  if (catchUp) clearInterval(catchUp);
+  catchUp = null;
 }
