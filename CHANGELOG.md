@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1 (2026-11-12)
+
+- A board shared with a team catches up every 2 minutes, so a change missed while a connection
+  dropped arrives without reopening it.
+
 ## 1.5.0 (2026-10-31)
 
 - Boards are shared with a Deck team for good: Share > Share with <team> (also on a board's tab), and
